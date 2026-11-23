@@ -1,0 +1,20 @@
+Tests de Typhon
+===============
+
+1) dsp_tests.cpp : moteur seul, sans JUCE (pas, voix, choke, liaisons, interpolation,
+   transient, dynamique, grain SP, fill). 
+   g++ -std=c++17 -O2 -I../../Source dsp_tests.cpp -o dsp_tests && ./dsp_tests
+
+2) harness.cpp : plugin complet sous Linux (lecture du pattern sur 4 mesures, fill, MIDI,
+   C0, Gate MIDI, choke global, état du projet, multi-out, charge CPU, captures d'écran
+   de l'interface dans les 4 thèmes). Compiler les modules JUCE 8.0.4 (juce_core,
+   juce_events, juce_data_structures, juce_graphics (+ Harfbuzz, Sheenbidi), juce_gui_basics,
+   juce_gui_extra, juce_audio_basics, juce_audio_formats, juce_audio_processors avec
+   -I.../VST3_SDK) puis les sources de Typhon et harness.cpp, avec un JuceHeader.h qui
+   inclut ces modules. Sans les en-têtes Xrandr / Xinerama / Xcursor / Xcomposite,
+   des en-têtes minimaux suffisent (types seulement).
+
+Résultats v1 : tous les tests passent ; charge maximale (8 pistes, ratchets x4 partout,
+qualité Ultra, transient + dynamique + grain SP) : ~13 % d'un coeur en -O1.
+Non testable sur le banc : la capture réelle d'EZdrummer, le glisser-déposer vers Ableton,
+les menus ouverts, la souris réelle. À juger à l'oreille et dans Ableton.

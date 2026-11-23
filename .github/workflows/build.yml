@@ -1,0 +1,41 @@
+name: Build Windows VST3
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -B build -A x64
+
+      - name: Build
+        run: cmake --build build --config Release --target Typhon_VST3 --parallel
+
+      - name: Upload VST3
+        uses: actions/upload-artifact@v4
+        with:
+          name: Typhon-VST3-Windows
+          path: build/Typhon_artefacts/Release/VST3/Typhon.vst3
+
+      - name: Zip VST3
+        run: Compress-Archive -Path build/Typhon_artefacts/Release/VST3/Typhon.vst3 -DestinationPath Typhon-VST3-Windows.zip
+
+      - name: Remove previous release
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release delete latest --yes --cleanup-tag
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create latest Typhon-VST3-Windows.zip --title "Typhon (dernier build)" --notes "VST3 Windows compile automatiquement depuis ${{ github.sha }}" --target ${{ github.sha }}
