@@ -199,7 +199,7 @@ namespace tui
             g.drawText (eng.isLoaded() ? juce::String::fromUTF8 ("\xe2\x97\x8f CHARG\xc3\x89") : juce::String (juce::String::fromUTF8 ("NON CHARG\xc3\x89")), statusRow, juce::Justification::centredRight);
             g.setFont (font (12.0f));
             g.setColour (t.sub);
-            g.drawFittedText (juce::String::fromUTF8 ("Dans EZdrummer : choisis le kit, coupe les effets si tu veux un son sec, puis reviens ici."), hint, juce::Justification::topLeft, 3);
+            g.drawFittedText (juce::String::fromUTF8 ("Choisis le kit dans EZdrummer (effets coup\xc3\xa9s pour un son sec). Tant que cette page est ouverte, EZdrummer s'entend dans Typhon : teste ses pads."), hint, juce::Justification::topLeft, 3);
 
             // progression
             auto pr = progressRow.toFloat();
@@ -237,7 +237,7 @@ namespace tui
             statusRow = L.removeFromTop (24); L.removeFromTop (6);
             loadBtn.setBounds (L.removeFromTop (38)); L.removeFromTop (6);
             openBtn.setBounds (L.removeFromTop (38)); L.removeFromTop (6);
-            hint = L.removeFromTop (34); L.removeFromTop (10);
+            hint = L.removeFromTop (48); L.removeFromTop (6);
             lblSettings = L.removeFromTop (18); L.removeFromTop (6);
             lblName = L.removeFromTop (18);
             nameEd.setBounds (L.removeFromTop (36)); L.removeFromTop (8);

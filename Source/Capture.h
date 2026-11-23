@@ -28,6 +28,11 @@ public:
     std::atomic<float> loadWaitSeconds { 10.0f }; // attente du chargement d'un kit en lot
     std::atomic<bool> laneEnabled[typhon::numLanes];
 
+    // --- écoute (page CAPTURE) : EZdrummer tourne en continu et s'entend dans Typhon
+    std::atomic<bool> monitor { false };
+    void setHostConfig (double sampleRate, int blockSize);
+    void processMonitor (juce::AudioBuffer<float>& out, const juce::MidiBuffer& midi, int numSamples);
+
     // --- capture -------------------------------------------------------------
     void captureNow (const juce::String& kitName);   // le kit actuellement chargé dans EZdrummer
     void addCurrentToQueue (const juce::String& kitName);
@@ -48,6 +53,9 @@ private:
     void run() override;
     bool captureKit (const juce::String& name, juce::File& outFolder);
     bool renderHit (int note, int vel, double sr, int maxLen, juce::AudioBuffer<float>& out);
+    bool renderHitOnce (int note, int vel, double sr, int maxLen, juce::AudioBuffer<float>& out, bool paced, float& peak);
+    void prepareLocked (double sr, int block, bool offline);
+    void log (const juce::String& line);
     void setMessage (const juce::String& m) { const juce::ScopedLock sl (msgLock); message = m; }
     static juce::File findPluginFile();
 
@@ -64,6 +72,16 @@ private:
     juce::String singleName;
     bool batchMode = false;
     std::atomic<int> done { 0 }, total { 0 };
+    std::atomic<double> hostRate { 48000.0 };
+    std::atomic<int> hostBlock { 512 };
+    std::atomic<bool> pacedMode { false };
+    std::atomic<float> lastPeak { 0.0f };
+    double preparedRate = 0.0;
+    int preparedBlock = 0;
+    bool offlinePrepared = false;
+    bool warmedUp = false;
+    juce::AudioBuffer<float> work;
+    juce::MidiBuffer monitorMidi;
     std::shared_ptr<std::atomic<bool>> alive { std::make_shared<std::atomic<bool>> (true) };
 
     JUCE_DECLARE_NON_COPYABLE (CaptureEngine)

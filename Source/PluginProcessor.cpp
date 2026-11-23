@@ -284,6 +284,7 @@ void TyphonProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     }
     lastPpqEnd = -1.0;
     lastBarIndex = -1;
+    if (captureEngine != nullptr) captureEngine->setHostConfig (sampleRate, samplesPerBlock);
 }
 
 void TyphonProcessor::trigger (int lane, int vel, int chokeMode, int64_t gateSamples)
@@ -384,6 +385,14 @@ void TyphonProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         if (! msg.isNoteOn()) continue;
         for (int l = 0; l < numLanes; ++l)
             if (midiMaps[map][l] == msg.getNoteNumber()) addEv (m.samplePosition, l, msg.getVelocity(), 0, -1);
+    }
+    // Page CAPTURE ouverte : EZdrummer tourne en continu (son moteur reste actif), s'entend et reçoit les notes
+    if (captureEngine != nullptr && captureEngine->monitor.load())
+    {
+        auto main = getBusBuffer (buffer, false, 0);
+        captureEngine->processMonitor (main, midi, n);
+        midi.clear();
+        return;
     }
     midi.clear();
 

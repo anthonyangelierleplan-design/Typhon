@@ -148,6 +148,7 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
 
     ~Ui() override
     {
+        ctx.proc.capture().monitor.store (false);
         stopTimer();
         setLookAndFeel (nullptr);
     }
@@ -161,6 +162,7 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
         for (auto* k : masterKnobs) k->setVisible (seq);
         fillAuto.setVisible (seq); dragBtn.setVisible (seq); fillBtn.setVisible (seq);
         capture.setVisible (pg == 1);
+        ctx.proc.capture().monitor.store (pg == 1);
         settingsPage.setVisible (pg == 2);
         if (pg == 1) capture.refresh();
         resized();

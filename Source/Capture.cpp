@@ -16,6 +16,35 @@ namespace
         void closeButtonPressed() override { setVisible (false); }
     };
 
+    // Certains instruments attendent une tête de lecture valide : on leur en donne une, à l'arrêt
+    struct IdleHead : public juce::AudioPlayHead
+    {
+        juce::Optional<PositionInfo> getPosition() const override
+        {
+            PositionInfo p;
+            p.setIsPlaying (false);
+            p.setBpm (120.0);
+            p.setPpqPosition (0.0);
+            p.setTimeInSamples (0);
+            p.setTimeInSeconds (0.0);
+            p.setTimeSignature (juce::AudioPlayHead::TimeSignature { 4, 4 });
+            return p;
+        }
+    };
+    IdleHead idleHead;
+
+    // Additionne toutes les sorties du plugin (multi-sorties comprises) dans L / R
+    void sumOutputs (const juce::AudioBuffer<float>& buf, int numOut, float* l, float* r, int n)
+    {
+        for (int c = 0; c < std::min (numOut, buf.getNumChannels()); ++c)
+        {
+            const float* src = buf.getReadPointer (c);
+            float* dst = (c % 2 == 0) ? l : r;
+            for (int i = 0; i < n; ++i) dst[i] += src[i];
+        }
+        if (numOut == 1) for (int i = 0; i < n; ++i) r[i] = l[i];
+    }
+
     juce::String safeName (const juce::String& n)
     {
         auto s = juce::File::createLegalFileName (n.trim());
@@ -80,12 +109,16 @@ bool CaptureEngine::load (juce::String& error)
     juce::String err;
     auto inst = formats.createPluginInstance (*types[0], 48000.0, 512, err);
     if (inst == nullptr) { error = juce::String::fromUTF8 ("Chargement refus\xc3\xa9 : ") + err; setMessage (error); return false; }
-    inst->disableNonMainBuses();
-    inst->prepareToPlay (48000.0, 512);
+    inst->enableAllBuses();          // EZdrummer en multi-sorties : on récupère tout
+    inst->setPlayHead (&idleHead);
     {
         const juce::ScopedLock sl (pluginLock);
         ezd = std::move (inst);
+        prepareLocked (hostRate.load(), std::max (32, hostBlock.load()), false);
     }
+    log ("Plugin : " + file.getFullPathName() + " | " + ezd->getName()
+         + " | entrees " + juce::String (ezd->getTotalNumInputChannels()) + " | sorties " + juce::String (ezd->getTotalNumOutputChannels())
+         + " | bus de sortie " + juce::String (ezd->getBusCount (false)) + " | " + juce::String (hostRate.load()) + " Hz / " + juce::String (hostBlock.load()));
     setMessage (pluginName() + juce::String::fromUTF8 (" charg\xc3\xa9. Choisis ton kit et ton mix, puis capture."));
     return true;
 }
@@ -164,39 +197,139 @@ double CaptureEngine::estimateSecondsPerKit() const
 {
     int lanesOn = 0; for (auto& e : laneEnabled) if (e.load()) ++lanesOn;
     // le rendu hors temps réel va environ 3 fois plus vite que le temps réel
-    return lanesOn * velLayers.load() * roundRobin.load() * (maxSeconds.load() + 0.3) / 3.0 + (batchMode ? loadWaitSeconds.load() : 0.0);
+    return lanesOn * velLayers.load() * roundRobin.load() * (maxSeconds.load() + 0.3) / (pacedMode.load() ? 1.0 : 3.0) + (batchMode ? loadWaitSeconds.load() : 0.0);
 }
 
 // ----------------------------------------------------------------------------
+void CaptureEngine::prepareLocked (double sr, int block, bool offline)
+{
+    if (ezd == nullptr) return;
+    ezd->releaseResources();
+    ezd->setNonRealtime (offline);
+    ezd->setRateAndBufferSizeDetails (sr, block);
+    ezd->prepareToPlay (sr, block);
+    preparedRate = sr; preparedBlock = block;
+    warmedUp = false;
+    const int nch = std::max (2, std::max (ezd->getTotalNumInputChannels(), ezd->getTotalNumOutputChannels()));
+    work.setSize (nch, std::max (block, 4096), false, true, true);
+}
+
+void CaptureEngine::setHostConfig (double sr, int block)
+{
+    hostRate.store (sr); hostBlock.store (block);
+    const juce::ScopedLock sl (pluginLock);
+    if (ezd != nullptr && ! isThreadRunning()) prepareLocked (sr, std::max (32, block), false);
+}
+
+// Appelé par le fil audio : jamais bloquant
+void CaptureEngine::processMonitor (juce::AudioBuffer<float>& out, const juce::MidiBuffer& midi, int n)
+{
+    if (isThreadRunning()) return;
+    const juce::ScopedTryLock tl (pluginLock);
+    if (! tl.isLocked() || ezd == nullptr || offlinePrepared || n > work.getNumSamples()) return;
+    juce::AudioBuffer<float> view (work.getArrayOfWritePointers(), work.getNumChannels(), n);
+    view.clear();
+    monitorMidi.clear();
+    monitorMidi.addEvents (midi, 0, n, 0);
+    ezd->processBlock (view, monitorMidi);
+    if (out.getNumChannels() >= 2)
+        sumOutputs (view, ezd->getTotalNumOutputChannels(), out.getWritePointer (0), out.getWritePointer (1), n);
+}
+
+void CaptureEngine::log (const juce::String& line)
+{
+    auto f = TyphonProcessor::libraryFolder().getParentDirectory().getChildFile ("capture_log.txt");
+    f.getParentDirectory().createDirectory();
+    f.appendText (juce::Time::getCurrentTime().toString (true, true) + "  " + line + "\n");
+}
+
 bool CaptureEngine::renderHit (int note, int vel, double sr, int maxLen, juce::AudioBuffer<float>& out)
 {
-    const juce::ScopedLock sl (pluginLock);
-    if (ezd == nullptr) return false;
+    // 1er essai rapide (hors temps réel) ; si silence, 2e essai au rythme du temps réel, gardé pour la suite
+    for (int attempt = 0; attempt < 2; ++attempt)
+    {
+        const bool paced = attempt == 1 || pacedMode.load();
+        float peak = 0.0f;
+        const bool ok = renderHitOnce (note, vel, sr, maxLen, out, paced, peak);
+        log ("note " + juce::String (note) + " vel " + juce::String (vel) + (paced ? " [temps reel]" : " [rapide]")
+             + " pic " + (peak > 0.0f ? juce::String (juce::Decibels::gainToDecibels (peak), 1) + " dB" : juce::String ("silence")));
+        lastPeak.store (std::max (lastPeak.load(), peak));
+        if (ok)
+        {
+            if (paced && ! pacedMode.load()) { pacedMode.store (true); log ("-> capture au rythme du temps reel pour la suite"); }
+            return true;
+        }
+        if (threadShouldExit() || paced) return false;
+    }
+    return false;
+}
+
+bool CaptureEngine::renderHitOnce (int note, int vel, double sr, int maxLen, juce::AudioBuffer<float>& out, bool paced, float& peakOut)
+{
     const int block = 512;
-    const int nch = std::max (2, std::max (ezd->getTotalNumInputChannels(), ezd->getTotalNumOutputChannels()));
-    juce::AudioBuffer<float> buf (nch, block);
+    const double blockMs = 1000.0 * block / sr;
+    peakOut = 0.0f;
+    auto pace = [&] (double startMs, int blocksDone)
+    {
+        if (! paced) return;
+        const double wait = startMs + blocksDone * blockMs - juce::Time::getMillisecondCounterHiRes();
+        if (wait > 0.5) juce::Thread::sleep ((int) wait);
+    };
+    auto process = [&] (juce::MidiBuffer& mb) -> bool
+    {
+        const juce::ScopedLock sl (pluginLock);
+        if (ezd == nullptr) return false;
+        juce::AudioBuffer<float> view (work.getArrayOfWritePointers(), work.getNumChannels(), block);
+        view.clear();
+        ezd->processBlock (view, mb);
+        return true;
+    };
+
+    {
+        const juce::ScopedLock sl (pluginLock);
+        if (ezd == nullptr) return false;
+        if (preparedRate != sr || preparedBlock != block || offlinePrepared == paced)
+        {
+            prepareLocked (sr, block, ! paced);
+            offlinePrepared = ! paced;
+        }
+    }
+    // mise en route (1 s) : laisse le moteur d'EZdrummer démarrer
     juce::MidiBuffer mb;
+    double t0 = juce::Time::getMillisecondCounterHiRes();
+    const int warm = (int) ((warmedUp ? 0.3 : 1.5) * sr) / block;
+    for (int i = 0; i < warm; ++i) { mb.clear(); if (! process (mb)) return false; pace (t0, i + 1); if (threadShouldExit()) return false; }
+    warmedUp = true;
 
-    // silence pour laisser mourir la queue du coup précédent
-    for (int i = 0; i < (int) (0.3 * sr) / block; ++i) { buf.clear(); mb.clear(); ezd->processBlock (buf, mb); }
-
-    out.setSize (2, maxLen, false, true, false);
+    out.setSize (2, maxLen + block, false, true, false);
     out.clear();
     const int offAt = (int) (0.12 * sr);
-    for (int pos = 0; pos < maxLen; pos += block)
+    const int numOut = ezd->getTotalNumOutputChannels();
+    t0 = juce::Time::getMillisecondCounterHiRes();
+    int b = 0;
+    for (int pos = 0; pos < maxLen; pos += block, ++b)
     {
         if (threadShouldExit()) return false;
-        buf.clear(); mb.clear();
+        mb.clear();
         if (pos == 0) mb.addEvent (juce::MidiMessage::noteOn (1, note, (juce::uint8) juce::jlimit (1, 127, vel)), 0);
         if (offAt >= pos && offAt < pos + block) mb.addEvent (juce::MidiMessage::noteOff (1, note), offAt - pos);
-        ezd->processBlock (buf, mb);
-        const int n = std::min (block, maxLen - pos);
-        out.copyFrom (0, pos, buf, 0, 0, n);
-        out.copyFrom (1, pos, buf, std::min (1, buf.getNumChannels() - 1), 0, n);
+        {
+            const juce::ScopedLock sl (pluginLock);
+            if (ezd == nullptr) return false;
+            juce::AudioBuffer<float> view (work.getArrayOfWritePointers(), work.getNumChannels(), block);
+            view.clear();
+            ezd->processBlock (view, mb);
+            sumOutputs (view, numOut, out.getWritePointer (0, pos), out.getWritePointer (1, pos), block);
+        }
+        pace (t0, b + 1);
     }
 
-    // découpe : début juste avant l'attaque, fin quand le son tombe sous -70 dB
-    const float onThr = 0.001f, offThr = 0.0003f;
+    // découpe : début juste avant l'attaque, fin quand le son retombe (seuils relatifs au pic)
+    float peak = 0.0f;
+    for (int i = 0; i < maxLen; ++i) peak = std::max (peak, std::max (std::fabs (out.getSample (0, i)), std::fabs (out.getSample (1, i))));
+    peakOut = peak;
+    if (peak < 1.0e-5f) return false;
+    const float onThr = peak * 0.02f, offThr = peak * 0.0003f;
     int first = -1, last = -1;
     for (int i = 0; i < maxLen; ++i)
     {
@@ -224,14 +357,9 @@ bool CaptureEngine::captureKit (const juce::String& name, juce::File& outFolder)
     const int L = juce::jlimit (1, 8, velLayers.load());
     const int RR = juce::jlimit (1, 4, roundRobin.load());
 
-    {
-        const juce::ScopedLock sl (pluginLock);
-        if (ezd == nullptr) return false;
-        ezd->setNonRealtime (true);
-        ezd->releaseResources();
-        ezd->setRateAndBufferSizeDetails (sr, 512);
-        ezd->prepareToPlay (sr, 512);
-    }
+    if (ezd == nullptr) return false;
+    lastPeak.store (0.0f);
+    log ("=== Capture \"" + name + "\" a " + juce::String ((int) sr) + " Hz, " + juce::String (L) + " couche(s), " + juce::String (RR) + " variante(s)");
 
     outFolder = TyphonProcessor::libraryFolder().getChildFile (safeName (name));
     outFolder.deleteRecursively();
@@ -285,7 +413,8 @@ bool CaptureEngine::captureKit (const juce::String& name, juce::File& outFolder)
     }
     {
         const juce::ScopedLock sl (pluginLock);
-        if (ezd != nullptr) { ezd->setNonRealtime (false); }
+        prepareLocked (hostRate.load(), std::max (32, hostBlock.load()), false);
+        offlinePrepared = false;
     }
     if (! any) { outFolder.deleteRecursively(); return false; }
     kit.writeTo (outFolder.getChildFile ("kit.xml"));
@@ -308,8 +437,10 @@ void CaptureEngine::run()
             setMessage (juce::String::fromUTF8 ("Kit \xc2\xab ") + name + juce::String::fromUTF8 (" \xc2\xbb captur\xc3\xa9 et charg\xc3\xa9."));
             juce::MessageManager::callAsync ([this, folder, a = alive] { if (a->load()) proc.loadKitFolder (folder); });
         }
-        else setMessage (threadShouldExit() ? juce::String (juce::String::fromUTF8 ("Capture arr\xc3\xaat\xc3\xa9" "e."))
-                                            : juce::String (juce::String::fromUTF8 ("Rien captur\xc3\xa9 : v\xc3\xa9rifie le kit et les notes dans EZdrummer.")));
+        else if (threadShouldExit()) setMessage (juce::String::fromUTF8 ("Capture arr\xc3\xaat\xc3\xa9" "e."));
+        else setMessage (lastPeak.load() > 0.0f
+                         ? juce::String::fromUTF8 ("Son trop faible pour \xc3\xaatre d\xc3\xa9tect\xc3\xa9. Journal : Documents/Foudre Audio/Typhon/capture_log.txt")
+                         : juce::String::fromUTF8 ("EZdrummer reste muet : son moteur audio ne d\xc3\xa9marre pas. Envoie-moi capture_log.txt (Documents/Foudre Audio/Typhon)."));
         return;
     }
 
