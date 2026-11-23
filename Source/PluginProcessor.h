@@ -78,6 +78,11 @@ public:
 
     juce::File writePatternMidi() const;   // pour glisser le pattern dans Ableton
     int noteForLane (int lane) const;
+    int seqLength() const { return pSeqLen->load() > 0.5f ? 32 : 16; }
+    float masterLevel() const { return masterMeter.load(); }
+    double hostBpm() const { return lastBpm.load(); }
+    // Découpe le sample de la piste en coups, les répartit sur les pistes ; renvoie le nombre de tranches
+    int sliceLane (int lane, float sensitivity, int maxSlices, bool writePattern);
 
     CaptureEngine& capture() { return *captureEngine; }
     int captureNote (int lane) const { return captureNotes[lane].load(); }
@@ -91,7 +96,7 @@ private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
     static BusesProperties makeBuses();
 
-    void trigger (int lane, int vel, int chokeMode, int64_t gateSamples);
+    void trigger (int lane, int vel, int chokeMode, int64_t gateSamples, int step, int pitchOffset, bool stepRev = false);
     void renderLanes (int from, int to);
 
     std::array<std::shared_ptr<typhon::SampleSet>, typhon::numLanes> sets;
@@ -107,11 +112,27 @@ private:
         typhon::TransientDesigner tr;
         typhon::Dynamics dyn;
         typhon::SpGrain sp;
+        typhon::Svf filt;
+        typhon::GrainCloud clouds[2];
+        float ovCut = std::numeric_limits<float>::quiet_NaN(), ovSendA = std::numeric_limits<float>::quiet_NaN(),
+              ovSendB = std::numeric_limits<float>::quiet_NaN();
         uint32_t rr = 0;
         float vol = 1.0f, panL = 1.0f, panR = 1.0f;
     };
     LaneDsp lanes[typhon::numLanes];
     juce::AudioBuffer<float> laneBuf;  // 2 canaux par piste
+    juce::AudioBuffer<float> fxA, fxB;  // envois vers les bus d'effets
+    std::vector<float> duckGain, dlyL, dlyR;
+    int dlyPos = 0; float dlyToneL = 0, dlyToneR = 0;
+    juce::Reverb reverb;
+    typhon::TransientDesigner masterTr;
+    typhon::Dynamics masterDyn;
+    float duckEnv = 10.0f;   // temps depuis le dernier coup de la source (s)
+    int reverbTail = 0, delayTail = 0;
+    bool wasPlaying = false;
+    std::atomic<float> masterMeter { 0.0f };
+    std::atomic<double> lastBpm { 120.0 };
+    typhon::GrainParams grainParams (int lane) const;
     double sr = 48000.0;
     int curQuality = 1;
 
@@ -119,9 +140,15 @@ private:
     struct LaneParamPtrs
     {
         std::atomic<float> *vol, *pan, *pitch, *start, *end, *decay, *choke, *group, *fade, *vsens,
-                           *out, *rev, *tatt, *tsus, *dmode, *dthr, *dratio, *datt, *drel, *dmix, *mute, *gate;
+                           *out, *rev, *tatt, *tsus, *dmode, *dthr, *dratio, *datt, *drel, *dmix, *mute, *gate,
+                           *fcut, *fres, *ftype, *sendA, *sendB, *duck,
+                           *gran, *gpos, *gsize, *gdens, *gspray, *gpitch, *gprand, *gstereo, *gspeed, *gdur, *grev, *gfreeze;
     } lp[typhon::numLanes];
-    std::atomic<float> *pSwing, *pSpAmt, *pSpBits, *pSpRate, *pSpFilt, *pMaster, *pFill, *pFillAuto, *pFillInt, *pChokeAll;
+    std::atomic<float> *pSwing, *pSpAmt, *pSpBits, *pSpRate, *pSpFilt, *pMaster, *pFill, *pFillAuto, *pFillInt, *pChokeAll,
+                       *pSeqLen, *pFillLen, *pFillGrid, *pFillOthers, *pFillCrash, *pFillLane[typhon::numLanes],
+                       *pFxaSize, *pFxaDamp, *pFxaWidth, *pFxaRet, *pFxbTime, *pFxbFb, *pFxbTone, *pFxbPp, *pFxbRet,
+                       *pDuckSrc, *pDuckAmt, *pDuckRel, *pDuckFx,
+                       *pMtAtt, *pMtSus, *pMdMode, *pMdThr, *pMdRatio, *pMdAtt, *pMdRel, *pMdMix;
 
     std::atomic<int> auditionMask { 0 };
     std::atomic<int> curStep { -1 };

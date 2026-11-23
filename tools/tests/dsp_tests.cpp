@@ -1,6 +1,7 @@
 // Tests du moteur Typhon (sans JUCE) : g++ -std=c++17 -O2 -I../../Source dsp_tests.cpp -o t && ./t
 #include "Dsp.h"
 #include "Fallback.h"
+namespace typhon { enum { lkCut = 4 }; }
 #include <cstdio>
 #include <random>
 using namespace typhon;
@@ -20,9 +21,12 @@ int main()
         {
             Step s; s.vel = vel; s.ratchet = r; s.len = len; s.choke = ch; s.split = sp;
             Step u = Step::unpack (s.pack());
-            ok &= u.vel == vel && u.ratchet == r && u.len == len && u.choke == ch && u.split == (bool) sp;
+            ok &= u.vel == vel && u.ratchet == r && u.len == len && u.choke == ch && u.split == (bool) sp && u.pitch == 0 && ! u.rev;
         }
-        CHECK (ok, "pas : rangement / lecture identiques (toutes combinaisons)");
+        for (int pt = -12; pt <= 12; ++pt) for (int rv = 0; rv < 2; ++rv) for (int len = 1; len <= 32; len += 31)
+        { Step s; s.vel = 90; s.pitch = pt; s.rev = rv; s.len = len; s.ratchet = 3; s.choke = 2; Step u = Step::unpack (s.pack()); ok &= u.pitch == pt && u.rev == (bool) rv && u.len == len && u.ratchet == 3 && u.choke == 2; }
+        CHECK (ok, "pas : rangement / lecture identiques (toutes combinaisons, pitch, reverse, 32 pas)");
+        { Pattern q; CHECK (! q.hasLocks (0, 0), "verrous : vides au départ"); q.setLock (2, 31, lkCut, 800.0f); CHECK (q.hasLocks (2, 31) && q.lock (2, 31, lkCut) == 800.0f, "verrous : écriture / lecture"); }
         Pattern p; Step h; h.vel = 100; h.len = 3; p.set (0, 4, h);
         CHECK (p.headOf (0, 5) == 4 && p.headOf (0, 6) == 4 && p.headOf (0, 7) == -1 && p.headOf (0, 3) == -1, "liaison : pas recouverts reconnus");
     }
@@ -108,17 +112,79 @@ int main()
     }
     // 7) fill et événements
     {
-        Pattern p; Step s; s.vel = 100; p.set (1, 4, s); p.set (1, 12, s); p.set (4, 14, s);
-        CHECK (fillStep (p, 1, 4, 1.0f).ratchet == 1, "fill : la première partie de la mesure reste intacte");
-        CHECK (fillStep (p, 1, 15, 1.0f).ratchet == 4 && fillStep (p, 1, 15, 1.0f).vel > 100, "fill : roulement de snare en crescendo à la fin");
-        CHECK (! fillStep (p, 4, 14, 1.0f).on(), "fill : les hats se taisent sous le roulement");
-        CHECK (fillStep (p, 1, 13, 0.0f).vel == 0, "fill à 0 = pattern d'origine");
+        FillOptions fo; fo.intensity = 1.0f; fo.lenSteps = 4; fo.grid = 1; fo.laneMask = (1u << 1) | (1u << 7); fo.othersMute = true;
+        HitList h0;
+        CHECK (! fillHits (fo, 1, 4, h0), "fill : la première partie de la mesure reste intacte");
+        int snare = 0, perc = 0, lastVel = 0; bool cresc = true;
+        for (int st = 12; st < 16; ++st)
+        {
+            HitList a; fillHits (fo, 1, st, a); snare += a.count; for (int k = 0; k < a.count; ++k) { cresc &= a.vel[k] >= lastVel; lastVel = a.vel[k]; }
+            HitList b; fillHits (fo, 7, st, b); perc += b.count; for (int k = 0; k < b.count; ++k) { cresc &= b.vel[k] >= lastVel; lastVel = b.vel[k]; }
+        }
+        CHECK (snare == 2 && perc == 2 && cresc, "fill 1 temps en 1/16 : snare puis perc à tour de rôle (%d + %d coups), crescendo", snare, perc);
+        HitList hh; const bool handled = fillHits (fo, 4, 13, hh);
+        CHECK (handled && hh.count == 0, "fill : les autres pistes se taisent si demandé");
+        fo.othersMute = false; HitList hk;
+        CHECK (! fillHits (fo, 4, 13, hk), "fill : les autres pistes gardent leur pattern si demandé");
+        fo.grid = 2; fo.lenSteps = 16; fo.laneMask = 1u << 1; int n32 = 0;
+        for (int st = 0; st < 16; ++st) { HitList a; fillHits (fo, 1, st, a); n32 += a.count; }
+        CHECK (n32 == 32, "fill 1 mesure en 1/32 : %d coups (32)", n32);
+        fo.grid = 3; int nt = 0; for (int st = 0; st < 16; ++st) { HitList a; fillHits (fo, 1, st, a); nt += a.count; }
+        CHECK (nt == 24, "fill 1 mesure en triolets : %d coups (24)", nt);
+        fo.intensity = 0.2f; fo.grid = 2; int ns = 0; for (int st = 0; st < 16; ++st) { HitList a; fillHits (fo, 1, st, a); ns += a.count; }
+        CHECK (ns == 24, "fill doux : la 1re moitié va 2x moins vite (%d coups)", ns);
         Step sp; sp.vel = 100; sp.split = true; auto h = hitsOf (sp);
         CHECK (h.count == 2 && h.at[1] == 0.5f, "pas divisé : 2 coups à 0 et 1/2");
         Step rt; rt.vel = 100; rt.ratchet = 3; h = hitsOf (rt);
         CHECK (h.count == 3 && std::fabs (h.at[2] - 2.0f / 3.0f) < 1e-6f, "ratchet x3 : 3 coups réguliers");
         CHECK (swingOffset (0, 0.66) == 0.0 && std::fabs (swingOffset (1, 0.66) - 0.32) < 1e-9, "swing : seuls les pas impairs sont décalés");
     }
+    // 8) filtre de piste
+    {
+        std::vector<float> l (48000), r (48000);
+        for (int i = 0; i < 48000; ++i) l[(size_t) i] = r[(size_t) i] = (float) std::sin (2 * M_PI * 8000.0 * i / sr);
+        Svf f; f.prepare (sr); f.set (500.0f, 0.707f); f.process (l.data(), r.data(), 48000, 0);
+        float pk = 0; for (int i = 24000; i < 48000; ++i) pk = std::max (pk, std::fabs (l[(size_t) i]));
+        CHECK (pk < 0.01f, "filtre passe-bas 500 Hz : un 8 kHz ressort à %.4f", pk);
+        bool ok = true;
+        for (int mode = 0; mode < 3; ++mode) for (float q : { 0.5f, 10.0f }) for (float fc : { 20.0f, 20000.0f })
+        {
+            std::vector<float> a (4800, 0.0f), b (4800, 0.0f); a[0] = b[0] = 1.0f;
+            Svf g; g.prepare (sr); g.set (fc, q); g.process (a.data(), b.data(), 4800, mode);
+            ok &= finiteAll (a) && peakOf (a) < 50.0f;
+        }
+        CHECK (ok, "filtre : stable aux extrêmes (3 modes, résonance max, 20 Hz / 20 kHz)");
+    }
+    // 9) granulaire
+    {
+        auto set = makeFallback (6, sr);
+        GrainParams gp; gp.durMs = 400; gp.density = 60; gp.sizeMs = 40; gp.spray = 0.5f; gp.stereo = 1.0f; gp.pitchRand = 5.0f; gp.reverse = 0.5f;
+        GrainCloud c; c.start (set->layers[0][0].get(), set, sr, gp, 1.0f, std::numeric_limits<float>::quiet_NaN());
+        std::vector<float> l (48000, 0.0f), r (48000, 0.0f);
+        c.render (l.data(), r.data(), 48000, gp, 1);
+        CHECK (finiteAll (l) && finiteAll (r) && peakOf (l) > 0.01f && peakOf (l) < 4.0f, "granulaire : nuage de 400 ms, pic %.2f", peakOf (l));
+        float tail = 0; for (int i = 24000; i < 48000; ++i) tail = std::max (tail, std::fabs (l[(size_t) i]));
+        CHECK (tail == 0.0f && ! c.active, "granulaire : le nuage s'arrête après sa durée");
+        GrainCloud d; d.start (set->layers[0][0].get(), set, sr, gp, 1.0f, std::numeric_limits<float>::quiet_NaN());
+        std::vector<float> a (9600, 0.0f), b (9600, 0.0f);
+        d.render (a.data(), b.data(), 2400, gp, 1); d.choke (240); d.render (a.data() + 2400, b.data() + 2400, 7200, gp, 1);
+        float after = 0; for (int i = 2400 + 260; i < 9600; ++i) after = std::max (after, std::fabs (a[(size_t) i]));
+        CHECK (after == 0.0f, "granulaire : le choke coupe le nuage");
+    }
+    // 10) slice : un faux break de 8 coups
+    {
+        Sample br; br.rate = sr;
+        const int hitsAt[8] = { 0, 12000, 24000, 30000, 42000, 54000, 66000, 78000 };
+        br.l.assign (90000, 0.0f);
+        for (int h : hitsAt) { auto k = makeFallback (h % 3 == 0 ? 0 : 1, sr); auto& x = k->layers[0][0]->l; for (size_t i = 0; i < x.size() && h + i < br.l.size(); ++i) br.l[h + i] += x[i] * 0.8f; }
+        br.r = br.l;
+        auto sl = detectSlices (br, 0.6f, 8);
+        int good = 0; for (int h : hitsAt) for (int p : sl) if (std::abs (p - h) < 400) { ++good; break; }
+        CHECK ((int) sl.size() == 8 && good == 8, "slice : %d coups trouvés, %d bien placés (8)", (int) sl.size(), good);
+        auto sl4 = detectSlices (br, 0.6f, 4);
+        CHECK ((int) sl4.size() == 4, "slice : limité à 4 tranches (%d)", (int) sl4.size());
+    }
+
     std::printf ("\n%s (%d échec%s)\n", fails == 0 ? "TOUT EST BON" : "PROBLÈMES", fails, fails > 1 ? "s" : "");
     return fails;
 }

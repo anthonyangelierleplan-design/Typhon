@@ -24,6 +24,12 @@ namespace typhon
     // Notes EZdrummer capturées par défaut pour chaque piste
     static const int captureNoteDefault[numLanes] = { 36, 38, 38, 37, 42, 46, 49, 48 };
 
+    // Réglages verrouillables par pas (ordre = indice dans Pattern::locks)
+    enum LockId { lkVol = 0, lkPan, lkStart, lkDecay, lkCut, lkGpos, lkSendA, lkSendB };
+    static const char* const lockParam[numLocks] = { "vol", "pan", "start", "decay", "fcut", "gpos", "sendA", "sendB" };
+    inline int lockIndexFor (const juce::String& what) { for (int k = 0; k < numLocks; ++k) if (what == lockParam[k]) return k; return -1; }
+    static const bool laneDuckDefault[numLanes] = { false, true, true, true, true, true, true, true };
+
     inline juce::String noteName (int n) { return juce::MidiMessage::getMidiNoteName (n, true, true, 3); }
 
     inline juce::String pid (int lane, const char* what) { return "l" + juce::String (lane) + "_" + what; }

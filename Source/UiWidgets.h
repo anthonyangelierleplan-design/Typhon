@@ -183,8 +183,10 @@ namespace tui
     {
     public:
         explicit SnapSlider (Ctx& c) : ctx (c) {}
+        bool ctrlInteger = false;   // Ctrl maintenu = valeurs entières (demi-tons)
         double snapValue (double v, DragMode) override
         {
+            if (ctrlInteger && juce::ModifierKeys::currentModifiers.isCtrlDown()) return std::round (v);
             if (! ctx.snap()) return v;
             const double lo = getMinimum(), hi = getMaximum();
             const double z = (lo < 0.0 && hi > 0.0) ? 0.0 : std::numeric_limits<double>::quiet_NaN();
@@ -211,6 +213,8 @@ namespace tui
 
         void attach (const juce::String& paramId)
         {
+            locked = false; lockGet = nullptr; lockSet = nullptr;
+            slider.onValueChange = nullptr;
             att.reset();
             param = ctx.proc.apvts.getParameter (paramId);
             if (param == nullptr) return;
@@ -220,27 +224,49 @@ namespace tui
         }
         void setLabel (const juce::String& l) { label = l; repaint(); }
 
+        // Mode verrou : le potard règle une valeur propre à un pas (get renvoie NaN = pas de verrou)
+        void setLockMode (std::function<float()> get, std::function<void (float)> set)
+        {
+            if (param == nullptr) return;
+            att.reset();
+            locked = true; lockGet = std::move (get); lockSet = std::move (set);
+            const auto& r = param->getNormalisableRange();
+            slider.setNormalisableRange (juce::NormalisableRange<double> (r.start, r.end, r.interval, r.skew));
+            const float v = lockGet();
+            slider.setValue (std::isnan (v) ? param->convertFrom0to1 (param->getValue()) : v, juce::dontSendNotification);
+            slider.onValueChange = [this] { if (lockSet) lockSet ((float) slider.getValue()); repaint(); };
+            repaint();
+        }
+        bool isLocked() const { return locked && lockGet && ! std::isnan (lockGet()); }
+
         std::function<juce::String (float)> formatter;
         bool onBottom = false;   // posé sur la barre du bas (couleurs adaptées)
 
         void resized() override
         {
             auto r = getLocalBounds();
-            r.removeFromBottom (30);
+            r.removeFromBottom (label.isEmpty() ? 16 : 30);
             const int d = std::min (r.getWidth(), r.getHeight());
             slider.setBounds (r.withSizeKeepingCentre (d, d));
         }
         void paint (juce::Graphics& g) override
         {
             const auto& t = ctx.th();
-            auto r = getLocalBounds().removeFromBottom (30);
+            auto r = getLocalBounds().removeFromBottom (label.isEmpty() ? 16 : 30);
             g.setColour (onBottom ? t.bottomTx : t.tx.withAlpha (0.85f));
             g.setFont (font (12.0f, onBottom));
-            g.drawText (label, r.removeFromTop (15), juce::Justification::centred);
+            if (label.isNotEmpty()) g.drawText (label, r.removeFromTop (15), juce::Justification::centred);
             g.setColour (onBottom ? t.bottomTx.withAlpha (0.75f) : valueColour (t));
             g.setFont (mono (11.0f));
             juce::String v;
-            if (param != nullptr)
+            if (locked && lockGet)
+            {
+                const float lv = lockGet();
+                const float shown = std::isnan (lv) ? (param != nullptr ? param->convertFrom0to1 (param->getValue()) : 0.0f) : lv;
+                v = formatter ? formatter (shown) : juce::String (shown, 2);
+                if (! std::isnan (lv)) { g.setColour (t.acc); v = juce::String::fromUTF8 ("\xe2\x97\x8f ") + v; }
+            }
+            else if (param != nullptr)
                 v = formatter ? formatter (param->convertFrom0to1 (param->getValue())) : param->getCurrentValueAsText();
             g.drawText (v, r, juce::Justification::centred);
         }
@@ -251,6 +277,9 @@ namespace tui
         juce::String label;
         juce::RangedAudioParameter* param = nullptr;
         std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> att;
+        bool locked = false;
+        std::function<float()> lockGet;
+        std::function<void (float)> lockSet;
     };
 
     // Formatages lisibles

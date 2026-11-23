@@ -4,6 +4,7 @@
 #include "UiLane.h"
 #include "UiCapture.h"
 #include "UiSettings.h"
+#include "UiMix.h"
 
 using namespace tui;
 
@@ -84,8 +85,8 @@ private:
 struct TyphonEditor::Ui : public juce::Component, private juce::Timer
 {
     Ui (TyphonProcessor& p)
-        : ctx { p }, look (ctx), grid (ctx), lane (ctx), capture (ctx), settingsPage (ctx),
-          tabSeq (ctx, juce::String::fromUTF8 ("S\xc3\x89QUENCEUR")), tabCap (ctx, "CAPTURE"),
+        : ctx { p }, look (ctx), grid (ctx), lane (ctx), capture (ctx), settingsPage (ctx), mixPage (ctx), editor (ctx),
+          tabSeq (ctx, juce::String::fromUTF8 ("S\xc3\x89QUENCEUR")), tabCap (ctx, "CAPTURE"), tabMix (ctx, "MIX"), fillSet (ctx, juce::String::fromUTF8 ("R\xc3\x89GLAGES FILL")),
           chokeAllBtn (ctx, "CHOKE GLOBAL"), settingsBtn (ctx, juce::String::fromUTF8 ("PARAM\xc3\x88TRES")),
           dragBtn (ctx), fillBtn (ctx)
     {
@@ -94,7 +95,26 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
         addAndMakeVisible (lane);
         addChildComponent (capture);
         addChildComponent (settingsPage);
-        for (auto* b : { &tabSeq, &tabCap, &settingsBtn, &chokeAllBtn }) { addAndMakeVisible (*b); b->textSize = 13.0f; }
+        addChildComponent (mixPage);
+        addChildComponent (editor);
+        for (auto* b : { &tabSeq, &tabCap, &tabMix, &settingsBtn, &chokeAllBtn }) { addAndMakeVisible (*b); b->textSize = 13.0f; }
+        tabMix.isOn = [this] { return page == 3; };
+        tabMix.onClick = [this] { setPage (3); };
+        addAndMakeVisible (fillSet); fillSet.textSize = 10.0f;
+        fillSet.onClick = [this]
+        {
+            juce::CallOutBox::launchAsynchronously (std::make_unique<FillPanel> (ctx), fillSet.getBounds(), this);
+        };
+        lane.onOpenEditor = [this] { editor.setLane (lane.lane); editorOpen = true; setPage (0); };
+        editor.onClose = [this] { editorOpen = false; setPage (0); };
+        grid.onLockStep = [this] (int l, int st)
+        {
+            grid.selected = l; lane.setLane (l);
+            grid.lockLane = l; grid.lockStep = st;
+            lane.setLockStep (st);
+            editorOpen = false; setPage (0);
+        };
+        lane.onLockEnded = [this] { grid.lockLane = -1; grid.lockStep = -1; grid.repaint(); };
         tabSeq.isOn = [this] { return page == 0; };
         tabCap.isOn = [this] { return page == 1; };
         settingsBtn.isOn = [this] { return page == 2; };
@@ -106,7 +126,7 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
         settingsPage.onClose = [this] { setPage (0); };
         settingsPage.onChanged = [this] { applySettings(); };
 
-        grid.onSelectLane = [this] (int l) { lane.setLane (l); };
+        grid.onSelectLane = [this] (int l) { lane.setLane (l); if (lane.getLockStep() < 0) { grid.lockLane = -1; grid.lockStep = -1; } if (editorOpen) editor.setLane (l); };
         grid.selected = 1;
 
         for (int i = 0; i < typhon::numLanes; ++i)
@@ -157,10 +177,12 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
     {
         page = pg;
         const bool seq = pg == 0;
-        grid.setVisible (seq); lane.setVisible (seq);
+        grid.setVisible (seq && ! editorOpen); lane.setVisible (seq && ! editorOpen);
+        editor.setVisible (seq && editorOpen);
         for (auto* f : faders) f->setVisible (seq);
         for (auto* k : masterKnobs) k->setVisible (seq);
-        fillAuto.setVisible (seq); dragBtn.setVisible (seq); fillBtn.setVisible (seq);
+        fillAuto.setVisible (seq); dragBtn.setVisible (seq); fillBtn.setVisible (seq); fillSet.setVisible (seq);
+        mixPage.setVisible (pg == 3);
         capture.setVisible (pg == 1);
         ctx.proc.capture().monitor.store (pg == 1);
         settingsPage.setVisible (pg == 2);
@@ -180,8 +202,9 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
 
     void timerCallback() override
     {
-        if (page == 0) { grid.tick(); lane.tick(); fillBtn.repaint(); }
+        if (page == 0) { if (editorOpen) editor.tick(); else { grid.tick(); lane.tick(); } fillBtn.repaint(); }
         else if (page == 1) capture.tick();
+        else if (page == 3) mixPage.tick();
         repaint (0, 0, baseW, headerH);
         if (page == 0) repaint (0, baseH - bottomH, baseW, bottomH);
     }
@@ -212,13 +235,17 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
         }
         else
         {
-            g.drawText (juce::String::fromUTF8 ("KIT \xe2\x96\xb8 ") + ctx.proc.currentKitName().toUpperCase(), lr, juce::Justification::centredLeft);
             const float sw = ctx.proc.apvts.getRawParameterValue ("swing")->load();
-            juce::String right = juce::String ("SWING ") + juce::String (juce::roundToInt (sw * 100.0f)) + " %   ";
+            juce::String right = juce::String ("SW ") + juce::String (juce::roundToInt (sw * 100.0f)) + "%  ";
             right += ctx.proc.hostPlaying() ? juce::String::fromUTF8 ("\xe2\x96\xb6 PAS ") + juce::String (ctx.proc.playingStep() + 1)
                                             : juce::String::fromUTF8 ("\xe2\x96\xa0 STOP");
             if (ctx.proc.fillActive()) right = "FILL   " + right;
-            g.drawText (right, lr, juce::Justification::centredRight);
+            g.setFont (mono (13.0f));
+            const int rw = juce::roundToInt (juce::GlyphArrangement::getStringWidth (g.getCurrentFont(), right)) + 6;
+            g.drawText (right, lr.removeFromRight (rw), juce::Justification::centredRight);
+            const juce::String leftText = page == 3 ? "MASTER " + juce::String (juce::Decibels::gainToDecibels (ctx.proc.masterLevel(), -60.0f), 1) + " dB"
+                                                    : ctx.proc.currentKitName().toUpperCase();
+            g.drawFittedText (leftText, lr.withTrimmedRight (8), juce::Justification::centredLeft, 1, 0.8f);
         }
 
         if (page == 0)
@@ -249,16 +276,19 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
     {
         // en-tête
         tabSeq.setBounds (268, 16, 150, 40);
-        tabCap.setBounds (424, 16, 120, 40);
+        tabCap.setBounds (424, 16, 116, 40);
+        tabMix.setBounds (546, 16, 80, 40);
         settingsBtn.setBounds (baseW - 24 - 140, 18, 140, 36);
         chokeAllBtn.setBounds (settingsBtn.getX() - 10 - 140, 18, 140, 36);
-        lcdArea = { 560, 14, chokeAllBtn.getX() - 16 - 560, 44 };
+        lcdArea = { 640, 14, chokeAllBtn.getX() - 16 - 640, 44 };
 
         auto body = juce::Rectangle<int> (0, headerH, baseW, baseH - headerH);
         capture.setBounds (body);
         settingsPage.setBounds (body);
+        mixPage.setBounds (body);
 
         auto main = juce::Rectangle<int> (24, headerH + 18, baseW - 48, baseH - headerH - bottomH - 30);
+        editor.setBounds (main);
         lane.setBounds (main.removeFromRight (340));
         main.removeFromRight (20);
         grid.setBounds (main);
@@ -276,9 +306,11 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
         bot.removeFromLeft (10);
         sep2 = bot.removeFromLeft (2).toFloat(); bot.removeFromLeft (14);
         auto fillCol = bot.removeFromLeft (96);
-        fillBtn.setBounds (fillCol.removeFromTop (62));
-        fillCol.removeFromTop (8);
+        fillBtn.setBounds (fillCol.removeFromTop (54));
+        fillCol.removeFromTop (5);
         fillAuto.setBounds (fillCol.removeFromTop (28));
+        fillCol.removeFromTop (5);
+        fillSet.setBounds (fillCol.removeFromTop (26));
         masterKnobs[6]->setBounds (bot.removeFromLeft (70).withSizeKeepingCentre (70, 96));
         bot.removeFromLeft (10);
         dragBtn.setBounds (bot.removeFromTop (54));
@@ -292,7 +324,10 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
     LanePanel lane;
     CapturePage capture;
     SettingsPage settingsPage;
-    Pill tabSeq, tabCap, chokeAllBtn, settingsBtn;
+    MixPage mixPage;
+    SampleEditor editor;
+    Pill tabSeq, tabCap, tabMix, fillSet, chokeAllBtn, settingsBtn;
+    bool editorOpen = false;
     DragMidiButton dragBtn;
     FillButton fillBtn;
     juce::OwnedArray<juce::Slider> faders;

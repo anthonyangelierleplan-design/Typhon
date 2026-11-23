@@ -4,7 +4,25 @@ Boîte à rythme / sampler de batterie (VST3, Windows) pour Ableton Live.
 Capture les sons d'EZdrummer 3 une fois pour toutes, puis les rejoue comme des samples :
 écriture rapide au séquenceur, choke, grain SP-1200, transient et dynamique par piste, multi-out.
 
-## Séquenceur (8 pistes x 16 pas)
+## Nouveautés v2
+- 16 ou 32 pas (2 pages, la page peut suivre la lecture).
+- Clic droit sur un pas : vélocité en haut, puis Rythme (diviser, ratchets, délier), Pitch (-12..+12), Choke, Jouer à l'envers, Verrous, Effacer.
+- Verrous par pas (« Régler ce pas ») : volume, pan, début, décroissance, filtre, envois A / B, position du grain. Point vert sur le pas.
+- Filtre par piste (LPF / HPF / BPF + résonance), envois vers 2 bus d'effets.
+- Onglets de piste : SAMPLE, GRAIN (moteur granulaire), SLICE (découpe d'un break sur les 8 pistes, avec ou sans pattern), DYN.
+- Waveform zoomable (molette), marqueurs de début / fin à la souris, éditeur en grand (double-clic ou « Agrandir »).
+- Pitch : Ctrl maintenu = demi-tons entiers.
+- Fill : pistes choisies (elles alternent), longueur (1 temps, 2 temps, 1 mesure), grille (1/8, 1/16, 1/32, triolets), autres pistes muettes ou non, crash au retour.
+- Onglet MIX : réverbe (bus A), delay calé sur le tempo (bus B), envois et ducking par piste, master (transient + compression / expansion vers le haut ou le bas).
+- À l'arrêt de la lecture, tous les sons s'arrêtent (fondu court).
+
+## Sortir Typhon sur plusieurs pistes dans Ableton
+1. PARAMÈTRES > Sorties > Multi-out (réglé par défaut).
+2. Crée une piste audio par élément. Dans « Audio From », choisis la piste de Typhon, puis la sortie (ex. « Out 2 Snare »), et mets Monitor sur « In ».
+3. Chaque piste de Typhon choisit sa sortie dans SAMPLE (menu Sortie). Une sortie non utilisée revient sur la sortie principale (piste de Typhon).
+Les retours de réverbe / delay et le master sortent sur la sortie principale.
+
+## Séquenceur (8 pistes x 16 ou 32 pas)
 - Clic : allumer / éteindre un pas. Clic + glisser vers la droite : lier des pas (note tenue, coupée à la fin).
 - Clic droit sur un pas : Normal / Accent / Doux, Diviser en 2, Ratchet x2 x3 x4, Délier, Choke du pas (suit la piste, toujours, laisse sonner), Effacer.
 - Clic sur le nom d'une piste : écouter. Clic droit : charger un sample, son de secours, Mute, Gate MIDI, effacer, copier / coller.

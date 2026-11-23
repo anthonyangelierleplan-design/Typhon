@@ -15,11 +15,13 @@
 #include <vector>
 #include <algorithm>
 #include <string>
+#include <limits>
 
 namespace typhon
 {
     static constexpr int numLanes = 8;
-    static constexpr int numSteps = 16;
+    static constexpr int numSteps = 32;      // capacité du pattern (la longueur jouée est 16 ou 32)
+    static constexpr int numLocks = 8;       // réglages verrouillables par pas
     static constexpr int maxVoicesPerLane = 6;
 
     inline float dbToGain (float db) { return db <= -99.0f ? 0.0f : std::pow (10.0f, db * 0.05f); }
@@ -31,13 +33,15 @@ namespace typhon
     //  bits 0..6   vélocité (0 = pas éteint)
     //  bits 7..8   ratchet - 1 (1..4 coups)
     //  bit  9      divisé en deux
-    //  bits 10..14 longueur de liaison - 1 (1..16 pas)
+    //  bits 10..14 longueur de liaison - 1 (1..32 pas)
     //  bits 15..16 choke du pas : 0 = suit la piste, 1 = toujours, 2 = laisse sonner
+    //  bits 17..21 pitch du pas + 12 (-12..+12 demi-tons)
+    //  bit  22     coup joué à l'envers
     // ------------------------------------------------------------------------
     struct Step
     {
-        int vel = 0, ratchet = 1, len = 1, choke = 0;
-        bool split = false;
+        int vel = 0, ratchet = 1, len = 1, choke = 0, pitch = 0;
+        bool split = false, rev = false;
 
         bool on() const { return vel > 0; }
 
@@ -46,8 +50,10 @@ namespace typhon
             return (uint32_t) (vel & 127)
                  | ((uint32_t) ((std::max (1, std::min (4, ratchet)) - 1) & 3) << 7)
                  | ((uint32_t) (split ? 1 : 0) << 9)
-                 | ((uint32_t) ((std::max (1, std::min (16, len)) - 1) & 31) << 10)
-                 | ((uint32_t) (choke & 3) << 15);
+                 | ((uint32_t) ((std::max (1, std::min (32, len)) - 1) & 31) << 10)
+                 | ((uint32_t) (choke & 3) << 15)
+                 | ((uint32_t) ((std::max (-12, std::min (12, pitch)) + 12) & 31) << 17)
+                 | ((uint32_t) (rev ? 1 : 0) << 22);
         }
         static Step unpack (uint32_t v)
         {
@@ -57,6 +63,9 @@ namespace typhon
             s.split = ((v >> 9) & 1) != 0;
             s.len = (int) ((v >> 10) & 31) + 1;
             s.choke = (int) ((v >> 15) & 3);
+            s.pitch = (int) ((v >> 17) & 31) - 12;
+            if (s.pitch < -12 || s.pitch > 12) s.pitch = 0;
+            s.rev = ((v >> 22) & 1) != 0;
             return s;
         }
     };
@@ -64,8 +73,22 @@ namespace typhon
     struct Pattern
     {
         std::atomic<uint32_t> steps[numLanes][numSteps];
+        // Verrous par pas : NaN = pas de verrou (valeur réelle du réglage sinon)
+        std::atomic<float> locks[numLanes][numSteps][numLocks];
         Pattern() { clear(); }
-        void clear() { for (auto& l : steps) for (auto& s : l) s.store (0); }
+        void clear()
+        {
+            for (auto& l : steps) for (auto& s : l) s.store (0);
+            for (auto& l : locks) for (auto& st : l) for (auto& v : st) v.store (std::numeric_limits<float>::quiet_NaN());
+        }
+        float lock (int lane, int step, int k) const { return locks[lane][step][k].load (std::memory_order_relaxed); }
+        void setLock (int lane, int step, int k, float v) { locks[lane][step][k].store (v, std::memory_order_relaxed); }
+        bool hasLocks (int lane, int step) const
+        {
+            for (int k = 0; k < numLocks; ++k) if (! std::isnan (lock (lane, step, k))) return true;
+            return false;
+        }
+        void clearLocks (int lane, int step) { for (int k = 0; k < numLocks; ++k) setLock (lane, step, k, std::numeric_limits<float>::quiet_NaN()); }
         Step get (int lane, int step) const { return Step::unpack (steps[lane][step].load (std::memory_order_relaxed)); }
         void set (int lane, int step, const Step& s) { steps[lane][step].store (s.pack(), std::memory_order_relaxed); }
 
@@ -204,7 +227,7 @@ namespace typhon
         std::shared_ptr<SampleSet> keep;   // garde le jeu de samples en vie tant que la voix joue
         double pos = 0.0, inc = 1.0, endPos = 0.0, startPos = 0.0;
         bool reverse = false;
-        float gain = 1.0f;
+        float gain = 1.0f, gL = 1.0f, gR = 1.0f;
         float fade = 1.0f, fadeStep = 0.0f;   // fondu de coupure
         float env = 1.0f, envMul = 1.0f;       // décroissance ajoutée
         int64_t gateLeft = -1;                 // liaison : coupe au bout de N échantillons (-1 = libre)
@@ -234,8 +257,8 @@ namespace typhon
                 float l = interp (smp->l, pos, quality);
                 float r = smp->r.empty() ? l : interp (smp->r, pos, quality);
                 const float g = gain * fade * env;
-                outL[s] += l * g;
-                outR[s] += r * g;
+                outL[s] += l * g * gL;
+                outR[s] += r * g * gR;
 
                 pos += reverse ? -inc : inc;
                 env *= envMul;
@@ -448,55 +471,16 @@ namespace typhon
     };
 
     // ------------------------------------------------------------------------
-    //  Fill : génère une variante du pattern sur le dernier temps (pas 12..15)
-    // ------------------------------------------------------------------------
-    // Rôle des pistes : 0 kick, 1 snare, 2 ghost, 3 rim, 4 hat fermé, 5 hat ouvert, 6 crash, 7 perc
-    inline Step fillStep (const Pattern& p, int lane, int step, float intensity)
-    {
-        Step s = p.get (lane, step);
-        if (step < 12 || intensity <= 0.0f) return s;
-        const int k = step - 12; // 0..3
-        auto crescendo = [&] (int base) { return std::min (127, base + k * 8); };
-        if (lane == 1) // snare : roulement qui s'accélère
-        {
-            if (intensity > 0.15f || k >= 2)
-            {
-                s.vel = crescendo (85);
-                s.split = false;
-                s.len = 1;
-                s.ratchet = intensity > 0.7f ? (k >= 2 ? 4 : 3) : (intensity > 0.35f ? (k >= 2 ? 3 : 2) : (k == 3 ? 2 : 1));
-            }
-        }
-        else if (lane == 7) // perc / tom : réponse à contretemps
-        {
-            if (intensity > 0.3f && (k % 2 == 1)) { s.vel = crescendo (80); s.ratchet = intensity > 0.75f ? 2 : 1; s.len = 1; }
-        }
-        else if (lane == 4 || lane == 5) // hats : on dégage la place
-        {
-            if (intensity > 0.5f) s.vel = 0;
-        }
-        else if (lane == 2) // ghost : se tait sous le roulement
-        {
-            if (intensity > 0.2f) s.vel = 0;
-        }
-        else if (lane == 0) // kick : un coup sur le dernier pas à fond
-        {
-            if (intensity > 0.6f && k == 3) { s.vel = 110; s.ratchet = 1; s.len = 1; }
-        }
-        return s;
-    }
-
-    // ------------------------------------------------------------------------
     //  Événements d'un pas : positions (en fraction de pas) de chaque coup
     // ------------------------------------------------------------------------
-    struct HitList { int count = 0; float at[4] {}; };
+    struct HitList { int count = 0; float at[4] {}; int vel[4] {}; };
     inline HitList hitsOf (const Step& s)
     {
         HitList h;
         if (! s.on()) return h;
-        if (s.split) { h.count = 2; h.at[0] = 0.0f; h.at[1] = 0.5f; return h; }
+        if (s.split) { h.count = 2; h.at[0] = 0.0f; h.at[1] = 0.5f; h.vel[0] = s.vel; h.vel[1] = std::max (1, s.vel - 10); return h; }
         h.count = std::max (1, std::min (4, s.ratchet));
-        for (int i = 0; i < h.count; ++i) h.at[i] = (float) i / (float) h.count;
+        for (int i = 0; i < h.count; ++i) { h.at[i] = (float) i / (float) h.count; h.vel[i] = i == 0 ? s.vel : std::max (1, s.vel - 10); }
         return h;
     }
 
@@ -505,4 +489,283 @@ namespace typhon
     {
         return (step % 2 == 1) ? (swing - 0.5) * 2.0 : 0.0;
     }
+
+    // ------------------------------------------------------------------------
+    //  Fill : remplace la fin de la mesure par un roulement
+    //  - longueur : 4, 8 ou 16 pas (1 temps, 2 temps, 1 mesure)
+    //  - grille : 0 = 1/8, 1 = 1/16, 2 = 1/32, 3 = 1/16 triolet
+    //  - les pistes choisies se partagent le roulement à tour de rôle (façon descente de toms)
+    //  - intensité : vélocité de départ et accélération (en dessous de 50 %, la 1re moitié va 2x moins vite)
+    // ------------------------------------------------------------------------
+    struct FillOptions
+    {
+        float intensity = 0.5f;
+        int lenSteps = 4;
+        int grid = 1;
+        uint32_t laneMask = 0b10000010;   // snare + perc
+        bool othersMute = true;
+    };
+
+    // Renvoie true si (piste, position dans la mesure) est pris en charge par le fill ; h reçoit les coups (éventuellement aucun)
+    inline bool fillHits (const FillOptions& o, int lane, int posInBar, HitList& h)
+    {
+        const int len = std::max (1, std::min (16, o.lenSteps));
+        const int z = posInBar - (16 - len);
+        h.count = 0;
+        if (z < 0) return false;
+
+        int sel[numLanes]; int nSel = 0;
+        for (int l = 0; l < numLanes; ++l) if (o.laneMask & (1u << l)) sel[nSel++] = l;
+        const bool mine = (o.laneMask & (1u << lane)) != 0;
+        if (! mine) return o.othersMute && lane != 6;   // le crash garde sa place
+        if (nSel == 0) return false;
+
+        // coups (en pas) de la zone, selon la grille
+        const double rate = o.grid == 0 ? 0.5 : (o.grid == 1 ? 1.0 : (o.grid == 2 ? 2.0 : 1.5));
+        const double spacing = 1.0 / rate;
+        const int total = std::max (1, (int) std::round (len * rate));
+        const int chunk = (total + nSel - 1) / nSel;
+        const bool slowStart = o.intensity < 0.5f;
+        for (int g = 0; g < total && h.count < 4; ++g)
+        {
+            const double t = g * spacing;              // position dans la zone, en pas
+            if (t < z || t >= z + 1) continue;
+            if (slowStart && g < total / 2 && (g % 2) == 1) continue;   // 1re moitié 2x plus lente
+            const int owner = sel[std::min (nSel - 1, g / std::max (1, chunk))];
+            if (owner != lane) continue;
+            const float prog = total > 1 ? (float) g / (float) (total - 1) : 1.0f;
+            const int v0 = 55 + (int) (45.0f * o.intensity);
+            h.at[h.count] = (float) (t - z);
+            h.vel[h.count] = std::min (127, v0 + (int) ((127 - v0) * prog));
+            ++h.count;
+        }
+        return true;
+    }
+
+    // ------------------------------------------------------------------------
+    //  Filtre de piste : variable d'état (TPT), passe-bas / passe-haut / passe-bande
+    // ------------------------------------------------------------------------
+    struct Svf
+    {
+        float g = 0, k = 1, a1 = 0, a2 = 0, a3 = 0, ic1[2] {}, ic2[2] {};
+        float lastF = -1, lastQ = -1; double sr = 48000.0;
+        void prepare (double s) { sr = s; lastF = -1; reset(); }
+        void reset() { ic1[0] = ic1[1] = ic2[0] = ic2[1] = 0; }
+        void set (float freq, float q)
+        {
+            if (freq == lastF && q == lastQ) return;
+            lastF = freq; lastQ = q;
+            const double f = std::min ((double) freq, sr * 0.49);
+            g = (float) std::tan (M_PI * f / sr);
+            k = 1.0f / std::max (0.5f, q);
+            a1 = 1.0f / (1.0f + g * (g + k)); a2 = g * a1; a3 = g * a2;
+        }
+        // mode : 0 passe-bas, 1 passe-haut, 2 passe-bande
+        void process (float* l, float* r, int n, int mode)
+        {
+            float* ch[2] = { l, r };
+            for (int c = 0; c < 2; ++c)
+                for (int i = 0; i < n; ++i)
+                {
+                    const float v0 = ch[c][i];
+                    const float v3 = v0 - ic2[c];
+                    const float v1 = a1 * ic1[c] + a2 * v3;
+                    const float v2 = ic2[c] + a2 * ic1[c] + a3 * v3;
+                    ic1[c] = 2.0f * v1 - ic1[c];
+                    ic2[c] = 2.0f * v2 - ic2[c];
+                    ch[c][i] = mode == 0 ? v2 : (mode == 1 ? v0 - k * v1 - v2 : v1);
+                }
+        }
+    };
+
+    // ------------------------------------------------------------------------
+    //  Granulaire : un « nuage » de grains joué à partir du sample de la piste
+    // ------------------------------------------------------------------------
+    struct GrainParams
+    {
+        float pos = 0.3f;        // 0..1 dans le sample
+        float sizeMs = 80.0f;
+        float density = 24.0f;   // grains / seconde
+        float spray = 0.1f;      // 0..1 : dispersion de la position
+        float pitch = 0.0f;      // demi-tons
+        float pitchRand = 0.0f;  // demi-tons
+        float stereo = 0.3f;     // 0..1
+        float speed = 0.0f;      // vitesse de défilement de la position (x temps réel, -2..2)
+        float durMs = 600.0f;    // durée du nuage
+        float reverse = 0.0f;    // probabilité de grain inversé
+        bool freeze = false;
+    };
+
+    inline const std::vector<float>& hannTable()
+    {
+        static const std::vector<float> t = [] {
+            std::vector<float> v (1025);
+            for (int i = 0; i <= 1024; ++i) { const double x = std::sin (M_PI * i / 1024.0); v[(size_t) i] = (float) (x * x); }
+            return v;
+        }();
+        return t;
+    }
+
+    struct GrainCloud
+    {
+        struct Grain { bool on = false; double pos = 0, inc = 1; int len = 1, age = 0; float gL = 1, gR = 1; };
+        static constexpr int maxGrains = 32;
+        Grain grains[maxGrains];
+        bool active = false;
+        const Sample* smp = nullptr;
+        std::shared_ptr<SampleSet> keep;
+        double scan = 0.0, nextIn = 0.0, sr = 48000.0;
+        int64_t left = 0, total = 1;
+        float gain = 1.0f, fade = 1.0f, fadeStep = 0.0f, gL = 1.0f, gR = 1.0f;
+        float pitchOffset = 0.0f;
+        bool invertRev = false;   // coup inversé : les grains jouent dans l'autre sens
+        int64_t gateLeft = -1; int gateFadeSamples = 64;
+        uint32_t rng = 12345u;
+        int age = 0;
+
+        float rnd() { rng = rng * 1664525u + 1013904223u; return (float) ((rng >> 8) & 0xffffff) / 16777216.0f; }
+
+        void start (const Sample* s, std::shared_ptr<SampleSet> k, double sampleRate, const GrainParams& p, float g, float posOverride)
+        {
+            smp = s; keep = std::move (k); sr = sampleRate; gain = g;
+            for (auto& gr : grains) gr.on = false;
+            scan = std::isnan (posOverride) ? p.pos : posOverride;
+            nextIn = 0.0;
+            total = left = std::max<int64_t> (64, (int64_t) (p.durMs * 0.001 * sr));
+            fade = 1.0f; fadeStep = 0.0f; gateLeft = -1; age = 0;
+            active = smp != nullptr && smp->length() > 16;
+        }
+
+        void choke (int fadeSamples)
+        {
+            if (! active) return;
+            const float step = fade / (float) std::max (1, fadeSamples);
+            if (fadeStep == 0.0f || step > fadeStep) fadeStep = step;
+        }
+
+        void render (float* outL, float* outR, int n, const GrainParams& p, int quality)
+        {
+            if (! active || smp == nullptr) { active = false; return; }
+            const auto& win = hannTable();
+            const double len = smp->length();
+            const int gLen = std::max (16, (int) (p.sizeMs * 0.001 * sr));
+            const double period = sr / std::max (0.5f, p.density);
+            const double scanStep = p.freeze ? 0.0 : (double) p.speed / len * (smp->rate / sr);
+            for (int s = 0; s < n; ++s)
+            {
+                if (gateLeft == 0) choke (gateFadeSamples);
+                if (gateLeft > 0) --gateLeft;
+                // nouveau grain
+                nextIn -= 1.0;
+                if (nextIn <= 0.0 && left > 0)
+                {
+                    nextIn += period;
+                    for (auto& gr : grains)
+                    {
+                        if (gr.on) continue;
+                        double pos = scan + (rnd() * 2.0f - 1.0f) * p.spray * 0.5f;
+                        pos = std::max (0.0, std::min (1.0, pos)) * (len - 2);
+                        const float pr = p.pitch + pitchOffset + (rnd() * 2.0f - 1.0f) * p.pitchRand;
+                        const double inc = smp->rate / sr * std::pow (2.0, pr / 12.0);
+                        const bool rev = (rnd() < p.reverse) != invertRev;
+                        gr.on = true; gr.age = 0; gr.len = gLen;
+                        gr.inc = rev ? -inc : inc;
+                        gr.pos = pos;
+                        const float pan = (rnd() * 2.0f - 1.0f) * p.stereo;
+                        gr.gL = std::sqrt (0.5f * (1.0f - pan)) * 1.41421356f;
+                        gr.gR = std::sqrt (0.5f * (1.0f + pan)) * 1.41421356f;
+                        break;
+                    }
+                }
+                // enveloppe du nuage : 5 ms d'entrée, 25 % de sortie
+                float envc = 1.0f;
+                const double since = (double) (total - left);
+                if (since < 0.005 * sr) envc = (float) (since / (0.005 * sr));
+                if (left < total / 4) envc *= (float) left / (float) std::max<int64_t> (1, total / 4);
+                if (left > 0) --left;
+
+                float l = 0.0f, r = 0.0f; bool any = false;
+                for (auto& gr : grains)
+                {
+                    if (! gr.on) continue;
+                    any = true;
+                    const float w = win[(size_t) std::min (1024, gr.age * 1024 / gr.len)];
+                    const float xl = interp (smp->l, gr.pos, quality == 2 ? 1 : quality);
+                    const float xr = smp->r.empty() ? xl : interp (smp->r, gr.pos, quality == 2 ? 1 : quality);
+                    l += xl * w * gr.gL; r += xr * w * gr.gR;
+                    gr.pos += gr.inc;
+                    if (++gr.age >= gr.len || gr.pos < 0.0 || gr.pos >= len - 1) gr.on = false;
+                }
+                const float g = gain * fade * envc * 0.6f;
+                outL[s] += l * g * gL; outR[s] += r * g * gR;
+                scan += scanStep;
+                if (scan > 1.0) scan -= 1.0;
+                if (scan < 0.0) scan += 1.0;
+                if (fadeStep > 0.0f) { fade -= fadeStep; if (fade <= 0.0f) { active = false; keep.reset(); return; } }
+                if (left <= 0 && ! any) { active = false; keep.reset(); return; }
+            }
+            ++age;
+        }
+    };
+
+    // ------------------------------------------------------------------------
+    //  Slice : détection des coups d'un break (montées d'énergie)
+    //  sensibilité 0..1 ; renvoie au plus maxSlices débuts (le premier est toujours 0)
+    // ------------------------------------------------------------------------
+    inline std::vector<int> detectSlices (const Sample& s, float sensitivity, int maxSlices)
+    {
+        std::vector<int> out { 0 };
+        const int n = s.length();
+        if (n < 1024 || maxSlices < 2) return out;
+        const int hop = std::max (64, (int) (s.rate * 0.0025));   // 2,5 ms
+        const int frames = n / hop;
+        std::vector<float> e ((size_t) frames, 0.0f);
+        for (int f = 0; f < frames; ++f)
+        {
+            // énergie de la dérivée : fait ressortir les attaques (aigus des coups) plutôt que les queues graves
+            double acc = 0.0;
+            for (int i = std::max (1, f * hop); i < (f + 1) * hop && i < n; ++i)
+            {
+                const float x = s.l[(size_t) i] + (s.r.empty() ? 0.0f : s.r[(size_t) i]);
+                const float xp = s.l[(size_t) i - 1] + (s.r.empty() ? 0.0f : s.r[(size_t) i - 1]);
+                acc += (double) (x - xp) * (x - xp);
+            }
+            e[(size_t) f] = 10.0f * std::log10 ((float) (acc / hop) + 1.0e-8f);
+        }
+        const float jumpDb = 14.0f - 10.0f * clampf (sensitivity, 0.0f, 1.0f);   // 14 dB (peu sensible) .. 4 dB
+        const int minGap = std::max (1, (int) (0.06 * s.rate / hop));
+        // fonction d'attaque : montée par rapport au minimum des 10 ms précédentes
+        std::vector<float> o ((size_t) frames, 0.0f);
+        for (int f = 4; f < frames; ++f)
+        {
+            float ref = e[(size_t) f - 1];
+            for (int k = 2; k <= 4; ++k) ref = std::min (ref, e[(size_t) f - k]);
+            o[(size_t) f] = (e[(size_t) f] > -60.0f) ? std::max (0.0f, e[(size_t) f] - ref) : 0.0f;
+        }
+        struct Cand { int frame; float jump; };
+        std::vector<Cand> cands;
+        // pics locaux : la plus forte montée dans une fenêtre de +/- 60 ms
+        for (int f = 4; f < frames; ++f)
+        {
+            if (o[(size_t) f] < jumpDb) continue;
+            bool isMax = true;
+            for (int k = std::max (0, f - minGap); k <= std::min (frames - 1, f + minGap) && isMax; ++k)
+                if (k != f && (o[(size_t) k] > o[(size_t) f] || (o[(size_t) k] == o[(size_t) f] && k < f))) isMax = false;
+            if (isMax) cands.push_back ({ f, o[(size_t) f] });
+        }
+        // garde les plus fortes si trop nombreuses
+        if ((int) cands.size() > maxSlices - 1)
+        {
+            std::sort (cands.begin(), cands.end(), [] (const Cand& a, const Cand& b) { return a.jump > b.jump; });
+            cands.resize ((size_t) (maxSlices - 1));
+        }
+        for (auto& c : cands)
+        {
+            const int pos = std::max (0, c.frame * hop - hop);
+            if (pos > (int) (0.03 * s.rate)) out.push_back (pos);
+        }
+        std::sort (out.begin(), out.end());
+        return out;
+    }
+
 }

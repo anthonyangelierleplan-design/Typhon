@@ -12,12 +12,42 @@ namespace tui
     class SeqGrid : public juce::Component, public juce::FileDragAndDropTarget
     {
     public:
-        SeqGrid (Ctx& c) : ctx (c) {}
+        SeqGrid (Ctx& c) : ctx (c), len16 (c, "16 PAS"), len32 (c, "32 PAS"), page1 (c, "1-16"), page2 (c, "17-32"), followBtn (c, "SUIVRE", true)
+        {
+            for (auto* b : { &len16, &len32, &page1, &page2, &followBtn }) { addAndMakeVisible (*b); b->textSize = 11.0f; }
+            len16.isOn = [this] { return ctx.proc.seqLength() == 16; };
+            len32.isOn = [this] { return ctx.proc.seqLength() == 32; };
+            auto setLen = [this] (int v) { if (auto* p = ctx.proc.apvts.getParameter ("seq_len")) p->setValueNotifyingHost (v == 32 ? 1.0f : 0.0f); if (v == 16) page = 0; repaint(); };
+            len16.onClick = [setLen] { setLen (16); };
+            len32.onClick = [setLen] { setLen (32); };
+            page1.isOn = [this] { return page == 0; };
+            page2.isOn = [this] { return page == 1; };
+            page1.onClick = [this] { page = 0; follow = false; repaint(); };
+            page2.onClick = [this] { if (ctx.proc.seqLength() == 32) { page = 1; follow = false; repaint(); } };
+            followBtn.isOn = [this] { return follow; };
+            followBtn.onClick = [this] { follow = ! follow; repaint(); };
+        }
 
         std::function<void (int)> onSelectLane;
+        std::function<void (int, int)> onLockStep;   // (piste, pas) : passer le panneau en mode verrou
         int selected = 1;
+        int lockLane = -1, lockStep = -1;
+        int page = 0;
+        bool follow = true;
 
-        static constexpr int headerH = 22, rowH = 44, rowGap = 5;
+        static constexpr int topH = 36, rowH = 44, rowGap = 5;
+        static constexpr int headerH = topH + 22;
+        int pageOffset() const { return ctx.proc.seqLength() == 32 ? page * 16 : 0; }
+
+        void resized() override
+        {
+            auto r = juce::Rectangle<int> (3, 0, getWidth() - 6, topH - 8);
+            len16.setBounds (r.removeFromLeft (70)); r.removeFromLeft (6);
+            len32.setBounds (r.removeFromLeft (70)); r.removeFromLeft (20);
+            page1.setBounds (r.removeFromLeft (70)); r.removeFromLeft (6);
+            page2.setBounds (r.removeFromLeft (70)); r.removeFromLeft (6);
+            followBtn.setBounds (r.removeFromLeft (80));
+        }
         static constexpr int nameW = 132, outW = 62, chokeW = 70, gap = 10;
 
         juce::Rectangle<int> rowRect (int lane) const { return { 0, headerH + lane * (rowH + rowGap), getWidth(), rowH }; }
@@ -28,17 +58,18 @@ namespace tui
             return juce::Rectangle<int> (3 + nameW + gap + outW + gap, r.getCentreY() - 15, chokeW, 30);
         }
         int stepsX0() const { return 3 + nameW + gap + outW + gap + chokeW + gap; }
-        float stepW() const { return (float) (getWidth() - 3 - stepsX0()) / (float) typhon::numSteps; }
+        float stepW() const { return (float) (getWidth() - 3 - stepsX0()) / 16.0f; }
+        // j = indice réel du pas (0..31) ; dessiné dans la colonne j - pageOffset()
         juce::Rectangle<float> stepRect (int lane, int j) const
         {
             const auto r = rowRect (lane);
             const float w = stepW();
-            return { stepsX0() + j * w, (float) r.getY() + 2.0f, w - 4.0f, (float) rowH - 4.0f };
+            return { stepsX0() + (j - pageOffset()) * w, (float) r.getY() + 2.0f, w - 4.0f, (float) rowH - 4.0f };
         }
         int stepAt (juce::Point<int> p) const
         {
             if (p.x < stepsX0()) return -1;
-            return juce::jlimit (0, typhon::numSteps - 1, (int) ((p.x - stepsX0()) / stepW()));
+            return pageOffset() + juce::jlimit (0, 15, (int) ((p.x - stepsX0()) / stepW()));
         }
         int laneAt (juce::Point<int> p) const
         {
@@ -57,15 +88,20 @@ namespace tui
             // en-tête : numéros des pas
             g.setFont (mono (11.0f));
             g.setColour (t.sub);
-            g.drawText (juce::String::fromUTF8 ("PISTE \xc2\xb7 NOTE"), 3, 0, nameW, headerH, juce::Justification::centredLeft);
-            g.drawText ("SORTIE", 3 + nameW + gap, 0, outW, headerH, juce::Justification::centredLeft);
-            g.drawText ("CHOKE", 3 + nameW + gap + outW + gap, 0, chokeW, headerH, juce::Justification::centredLeft);
-            for (int j = 0; j < numSteps; ++j)
+            const int off = pageOffset();
+            const int hy = topH, hh = headerH - topH;
+            g.drawText (juce::String::fromUTF8 ("PISTE \xc2\xb7 NOTE"), 3, hy, nameW, hh, juce::Justification::centredLeft);
+            g.drawText ("SORTIE", 3 + nameW + gap, hy, outW, hh, juce::Justification::centredLeft);
+            g.drawText ("CHOKE", 3 + nameW + gap + outW + gap, hy, chokeW, hh, juce::Justification::centredLeft);
+            for (int j = off; j < off + 16; ++j)
             {
                 auto r = stepRect (0, j);
                 g.setColour (j == play ? t.lcdTx : (j % 4 == 0 ? t.tx : t.sub.withAlpha (0.7f)));
-                g.drawText (juce::String (j + 1), (int) r.getX(), 0, (int) r.getWidth(), headerH, juce::Justification::centred);
+                g.drawText (juce::String (j + 1), (int) r.getX(), hy, (int) r.getWidth(), hh, juce::Justification::centred);
             }
+            g.setColour (t.sub); g.setFont (font (11.0f));
+            g.drawText (ctx.proc.seqLength() == 32 ? juce::String::fromUTF8 ("Page affich\xc3\xa9" "e : ") + (page == 0 ? "1-16" : "17-32") : juce::String(),
+                        followBtn.getRight() + 16, 0, 220, topH - 8, juce::Justification::centredLeft);
 
             for (int lane = 0; lane < numLanes; ++lane)
             {
@@ -105,7 +141,7 @@ namespace tui
                 g.drawText (ch ? "CHOKE" : "OFF", cr.toNearestInt(), juce::Justification::centred);
 
                 // pas
-                for (int j = 0; j < numSteps; ++j)
+                for (int j = off; j < off + 16; ++j)
                 {
                     auto r = stepRect (lane, j);
                     const Step s = pat.get (lane, j);
@@ -155,10 +191,31 @@ namespace tui
                             g.setColour (s.choke == 1 ? t.tx : t.lcdTx);
                             g.fillRoundedRectangle (r.withHeight (5.0f), 2.0f);
                         }
+                        if (s.rev)
+                        {
+                            juce::Path tri; const float bx = r.getX() + 5.0f, by = r.getBottom() - 6.0f;
+                            tri.addTriangle (bx, by, bx + 6.0f, by - 4.0f, bx + 6.0f, by + 4.0f);
+                            g.setColour (t.bg); g.fillPath (tri);
+                        }
+                        if (s.pitch != 0)
+                        {
+                            g.setColour (t.bg); g.setFont (mono (10.0f, true));
+                            g.drawText ((s.pitch > 0 ? "+" : "") + juce::String (s.pitch), r.toNearestInt().reduced (3, 4), juce::Justification::topLeft);
+                        }
+                    }
+                    if (pat.hasLocks (lane, j))
+                    {
+                        g.setColour (valueColour (t));
+                        g.fillEllipse (r.getRight() - 9.0f, r.getBottom() - 9.0f, 6.0f, 6.0f);
+                    }
+                    if (lane == lockLane && j == lockStep)
+                    {
+                        g.setColour (t.lcdTx);
+                        g.drawRoundedRectangle (r.expanded (1.5f), 5.0f, 2.5f);
                     }
                 }
                 // tête de lecture
-                if (play >= 0)
+                if (play >= off && play < off + 16)
                 {
                     auto r = stepRect (lane, play).expanded (1.0f);
                     g.setColour (t.lcdTx.withAlpha (0.9f));
@@ -183,6 +240,8 @@ namespace tui
         // animation
         void tick()
         {
+            if (ctx.proc.seqLength() == 16) page = 0;
+            else if (follow && ctx.proc.playingStep() >= 0) page = ctx.proc.playingStep() / 16;
             for (int l = 0; l < typhon::numLanes; ++l)
             {
                 const auto c = ctx.proc.laneHitCounter (l);
@@ -274,7 +333,7 @@ namespace tui
             auto& pat = ctx.proc.pattern;
             Step h = pat.get (lane, head);
             if (! h.on()) return;
-            len = juce::jlimit (1, numSteps - head, len);
+            len = juce::jlimit (1, ctx.proc.seqLength() - head, len);
             for (int k = head + 1; k < head + len; ++k) pat.set (lane, k, Step());
             h.len = len;
             pat.set (lane, head, h);
@@ -288,24 +347,41 @@ namespace tui
             const int head = s.on() ? j : pat.headOf (lane, j);
             const int at = head >= 0 ? head : j;
             s = pat.get (lane, at);
+            const auto times = juce::String::fromUTF8 ("\xc3\x97");
 
-            juce::PopupMenu m, chokeM;
+            // Menu court : vélocités en haut, le reste rangé par thème
+            juce::PopupMenu m, rythm, pitchM, chokeM, lockM;
             m.addSectionHeader (laneName (lane) + juce::String::fromUTF8 (" \xc2\xb7 pas ") + juce::String (at + 1));
             m.addItem (1, "Normal", true, s.on() && s.vel >= 90 && s.vel < 120);
             m.addItem (2, "Accent", true, s.on() && s.vel >= 120);
             m.addItem (3, "Doux (ghost)", true, s.on() && s.vel < 90);
             m.addSeparator();
-            m.addItem (4, "Diviser en 2", true, s.split);
-            m.addItem (5, juce::String::fromUTF8 ("Ratchet \xc3\x97" "2"), true, ! s.split && s.ratchet == 2);
-            m.addItem (6, juce::String::fromUTF8 ("Ratchet \xc3\x97" "3"), true, ! s.split && s.ratchet == 3);
-            m.addItem (7, juce::String::fromUTF8 ("Ratchet \xc3\x97" "4"), true, ! s.split && s.ratchet == 4);
-            m.addItem (8, juce::String::fromUTF8 ("D\xc3\xa9lier"), s.len > 1);
+
+            rythm.addItem (4, "Diviser en 2", true, s.split);
+            rythm.addItem (5, "Ratchet " + times + "2", true, ! s.split && s.ratchet == 2);
+            rythm.addItem (6, "Ratchet " + times + "3", true, ! s.split && s.ratchet == 3);
+            rythm.addItem (7, "Ratchet " + times + "4", true, ! s.split && s.ratchet == 4);
+            rythm.addSeparator();
+            rythm.addItem (8, juce::String::fromUTF8 ("D\xc3\xa9lier"), s.len > 1);
+            juce::String rTag = s.split ? " (1/2)" : (s.ratchet > 1 ? " (" + times + juce::String (s.ratchet) + ")" : juce::String());
+            m.addSubMenu ("Rythme" + rTag, rythm);
+
+            for (int p = 12; p >= -12; --p)
+                pitchM.addItem (200 + p + 12, (p > 0 ? "+" : "") + juce::String (p) + (p == 0 ? " (normal)" : " st"), true, s.pitch == p);
+            m.addSubMenu ("Pitch" + (s.pitch != 0 ? "  (" + juce::String (s.pitch > 0 ? "+" : "") + juce::String (s.pitch) + ")" : juce::String()), pitchM);
+
             chokeM.addItem (20, "Suit la piste", true, s.choke == 0);
             chokeM.addItem (21, "Toujours (coupe la note d'avant)", true, s.choke == 1);
             chokeM.addItem (22, "Laisse sonner", true, s.choke == 2);
-            m.addSubMenu ("Choke de ce pas", chokeM);
+            m.addSubMenu ("Choke" + juce::String (s.choke == 1 ? " (toujours)" : (s.choke == 2 ? " (laisse sonner)" : "")), chokeM);
+
+            m.addItem (10, juce::String::fromUTF8 ("Jouer \xc3\xa0 l'envers (reverse)"), true, s.rev);
+
+            lockM.addItem (30, juce::String::fromUTF8 ("R\xc3\xa9gler ce pas..."));
+            lockM.addItem (31, "Effacer les verrous", pat.hasLocks (lane, at));
+            m.addSubMenu ("Verrous" + juce::String (pat.hasLocks (lane, at) ? juce::String::fromUTF8 (" \xe2\x97\x8f") : juce::String()), lockM);
             m.addSeparator();
-            m.addItem (9, "Effacer", s.on());
+            m.addItem (9, "Effacer le pas", s.on() || pat.hasLocks (lane, at));
 
             juce::Component::SafePointer<SeqGrid> safe (this);
             m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this).withMousePosition(),
@@ -323,9 +399,12 @@ namespace tui
                         case 4: turnOn(); x.split = ! x.split; x.ratchet = 1; break;
                         case 5: case 6: case 7: { turnOn(); const int n = r - 3; x.ratchet = x.ratchet == n ? 1 : n; x.split = false; } break;
                         case 8: x.len = 1; break;
-                        case 9: x = Step(); break;
+                        case 9: x = Step(); pat.clearLocks (lane, at); break;
+                        case 10: turnOn(); x.rev = ! x.rev; break;
                         case 20: case 21: case 22: turnOn(); x.choke = r - 20; break;
-                        default: break;
+                        case 30: turnOn(); pat.set (lane, at, x); if (safe->onLockStep) safe->onLockStep (lane, at); safe->repaint(); return;
+                        case 31: pat.clearLocks (lane, at); break;
+                        default: if (r >= 200 && r <= 224) { turnOn(); x.pitch = r - 212; } break;
                     }
                     pat.set (lane, at, x);
                     safe->repaint();
@@ -345,6 +424,7 @@ namespace tui
             m.addItem (3, "Revenir au son de secours");
             m.addSeparator();
             m.addItem (4, "Mute", true, muted);
+            m.addItem (9, juce::String::fromUTF8 ("Reverse (toute la piste)"), true, ap.getRawParameterValue (pid (lane, "rev"))->load() > 0.5f);
             m.addItem (5, juce::String::fromUTF8 ("Gate MIDI (la dur\xc3\xa9" "e de la note coupe le son)"), true, gate);
             m.addSeparator();
             m.addItem (6, "Effacer la piste");
@@ -376,7 +456,8 @@ namespace tui
                         case 3: P.resetLaneToFallback (lane); break;
                         case 4: toggle ("mute"); break;
                         case 5: toggle ("gate"); break;
-                        case 6: for (int j = 0; j < numSteps; ++j) P.pattern.set (lane, j, Step()); break;
+                        case 9: toggle ("rev"); break;
+                        case 6: for (int j = 0; j < numSteps; ++j) { P.pattern.set (lane, j, Step()); P.pattern.clearLocks (lane, j); } break;
                         case 7: safe->clip.clear(); for (int j = 0; j < numSteps; ++j) safe->clip.push_back (P.pattern.steps[lane][j].load()); break;
                         case 8: for (int j = 0; j < numSteps && j < (int) safe->clip.size(); ++j) P.pattern.steps[lane][j].store (safe->clip[(size_t) j]); break;
                         default: break;
@@ -391,6 +472,7 @@ namespace tui
         float flashes[typhon::numLanes] {};
         uint32_t lastHits[typhon::numLanes] {};
         std::vector<uint32_t> clip;
+        Pill len16, len32, page1, page2, followBtn;
         std::unique_ptr<juce::FileChooser> chooser;
     };
 }

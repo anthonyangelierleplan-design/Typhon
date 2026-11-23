@@ -70,13 +70,13 @@ int main (int argc, char** argv)
         r = run (p, h, 4.0);
         CHECK (r.finite, "swing 66 %% : stable");
 
-        // fill manuel : la snare joue plus de coups
-        const auto before = totalHits (p, 1);
-        setParam (p, "fill", 1.0f); setParam (p, "fill_int", 1.0f);
-        run (p, h, 2.0);
-        const auto fillHits = totalHits (p, 1) - before;
+        // fill manuel, 1 mesure en 1/32 : snare et perc se partagent 32 coups par mesure
+        const auto before = totalHits (p, 1) + totalHits (p, 7);
+        setParam (p, "fill", 1.0f); setParam (p, "fill_int", 1.0f); setParam (p, "fill_len", 2.0f); setParam (p, "fill_grid", 2.0f);
+        run (p, h, 4.0);
+        const auto fillHits = totalHits (p, 1) + totalHits (p, 7) - before;
         setParam (p, "fill", 0.0f);
-        CHECK (fillHits > 6, "fill : %u coups de snare sur une mesure (2 sans fill)", fillHits);
+        CHECK (fillHits >= 60 && fillHits <= 68, "fill 1 mesure en 1/32 : %u coups snare + perc sur 2 mesures (64)", fillHits);
 
         // MIDI : C1 joue le kick, C0 coupe tout
         h.playing = false;
@@ -109,16 +109,108 @@ int main (int argc, char** argv)
         setParam (p, "choke_all", 0.0f);
     }
 
+    // --- 1b) v2 : 32 pas, pitch par pas, verrous, arrêt, ducking, effets, master, granulaire ---
+    {
+        TyphonProcessor p; FakeHead h; p.setPlayHead (&h);
+        p.prepareToPlay (48000.0, 512);
+        p.pattern.clear();
+        setParam (p, "seq_len", 1.0f);
+        typhon::Step s; s.vel = 100; p.pattern.set (3, 20, s);        // un seul coup, au pas 21
+        run (p, h, 8.0);                                               // 4 mesures = 2 tours de 32 pas
+        CHECK (p.laneHitCounter (3) == 2, "32 pas : le pas 21 joue une fois par tour (%u / 2)", p.laneHitCounter (3));
+        setParam (p, "seq_len", 0.0f);
+        run (p, h, 8.0);
+        CHECK (p.laneHitCounter (3) == 2, "16 pas : les pas 17-32 ne jouent plus");
+
+        // arrêt de la lecture : le crash s'arrête vite
+        p.pattern.clear();
+        typhon::Step c; c.vel = 120; p.pattern.set (6, 0, c);
+        h.ppq = 3.99; run (p, h, 0.2);
+        h.playing = false; run (p, h, 0.05);
+        auto tail = run (p, h, 0.3);
+        CHECK (tail.peak < 1.0e-4f, "arrêt de la lecture : le crash est coupé (reste %.6f)", tail.peak);
+        h.playing = true;
+
+        // verrou de volume : -30 dB sur un pas
+        p.pattern.clear();
+        typhon::Step k; k.vel = 127; p.pattern.set (0, 0, k); p.pattern.set (0, 8, k);
+        p.pattern.setLock (0, 8, typhon::lkVol, -30.0f);
+        float a = 0, b = 0;
+        h.ppq = 0.0;
+        for (int i = 0; i < 180; ++i)
+        {
+            juce::AudioBuffer<float> buf (p.getTotalNumOutputChannels(), 512); juce::MidiBuffer mb;
+            p.processBlock (buf, mb);
+            const float m = buf.getMagnitude (0, 0, 512);
+            if (h.ppq < 1.5) a = std::max (a, m); else if (h.ppq >= 2.0 && h.ppq < 3.5) b = std::max (b, m);
+            h.ppq += 512.0 / 48000.0 * 2.0;
+        }
+        CHECK (b > 0.0f && juce::Decibels::gainToDecibels (b / a) < -24.0f, "verrou de volume : le pas 9 sonne %.1f dB plus bas", juce::Decibels::gainToDecibels (b / a));
+
+        // pitch par pas : +12 = coup plus court (lu 2x plus vite)
+        TyphonProcessor q; FakeHead hq; q.setPlayHead (&hq); q.prepareToPlay (48000.0, 512); q.pattern.clear();
+        typhon::Step pp; pp.vel = 100; pp.pitch = 12; q.pattern.set (6, 0, pp);
+        setParam (q, typhon::pid (6, "choke"), 0.0f);
+        hq.ppq = 3.999;
+        int64_t lenUp = 0; { juce::AudioBuffer<float> buf (2, 512); for (int i = 0; i < 175; ++i) { juce::MidiBuffer mb; q.processBlock (buf, mb); hq.ppq += 512.0 / 48000.0 * 2.0; if (buf.getMagnitude (0, 512) > 1.0e-4f) lenUp += 512; } }
+        CHECK (lenUp > 30000 && lenUp < 55000, "pitch +12 : crash de 1,8 s joué en ~0,9 s (%.2f s)", lenUp / 48000.0);
+
+        // ducking : le kick (muet, source) fait baisser le hat juste après chaque coup
+        auto duckLevel = [] (float amt)
+        {
+            TyphonProcessor d; FakeHead hd; d.setPlayHead (&hd); d.pattern.clear();
+            setParam (d, typhon::pid (0, "vol"), -60.0f);
+            d.prepareToPlay (48000.0, 512);
+            typhon::Step x; x.vel = 100; d.pattern.set (4, 1, x);   // hat 1/16 après le kick
+            setParam (d, "duck_rel", 400.0f);
+            typhon::Step kk; kk.vel = 127; d.pattern.set (0, 0, kk);
+            setParam (d, "duck_amt", amt); setParam (d, typhon::pid (0, "vol"), -60.0f);
+            float m = 0.0f; hd.ppq = 0.0;
+            for (int i = 0; i < 30; ++i) { juce::AudioBuffer<float> buf (2, 512); juce::MidiBuffer mb; d.processBlock (buf, mb); hd.ppq += 512.0 / 48000.0 * 2.0; m = std::max (m, buf.getMagnitude (0, 512)); }
+            return m;
+        };
+        const float dry = duckLevel (0.0f), ducked = duckLevel (1.0f);
+        CHECK (ducked < dry * 0.7f, "ducking : hat 1/16 après le kick %.3f -> %.3f", dry, ducked);
+
+        // effets : un envoi vers la réverbe laisse une queue
+        TyphonProcessor e; FakeHead he; he.playing = false; e.setPlayHead (&he); e.prepareToPlay (48000.0, 512);
+        setParam (e, typhon::pid (1, "sendA"), 1.0f);
+        e.audition (1);
+        run (e, he, 0.5);
+        auto rt = run (e, he, 0.5);
+        CHECK (rt.peak > 1.0e-3f && rt.finite, "réverbe : queue encore présente après 0,5 s (%.4f)", rt.peak);
+        setParam (e, typhon::pid (1, "sendA"), 0.0f); setParam (e, typhon::pid (1, "sendB"), 1.0f);
+        e.audition (1); run (e, he, 0.6);
+        auto dt = run (e, he, 0.4);
+        CHECK (dt.peak > 1.0e-3f && dt.finite, "delay : échos présents (%.4f)", dt.peak);
+
+        // granulaire sur une piste
+        TyphonProcessor g; FakeHead hg; hg.playing = false; g.setPlayHead (&hg); g.prepareToPlay (48000.0, 512);
+        setParam (g, typhon::pid (6, "gran"), 1.0f);
+        g.audition (6);
+        auto gr = run (g, hg, 0.4);
+        CHECK (gr.finite && gr.peak > 0.01f, "granulaire : la piste crash joue un nuage (pic %.2f)", gr.peak);
+
+        // master : compression vers le bas à fond = niveau plus bas, stable
+        TyphonProcessor mm; FakeHead hm; mm.setPlayHead (&hm); mm.prepareToPlay (48000.0, 512);
+        auto r1 = run (mm, hm, 4.0);
+        setParam (mm, "m_dratio", 20.0f); setParam (mm, "m_dthr", -40.0f);
+        auto r2 = run (mm, hm, 4.0);
+        CHECK (r2.finite && r2.peak < r1.peak, "master : compression à fond (pic %.2f -> %.2f)", r1.peak, r2.peak);
+    }
+
     // --- 2) état du projet ---------------------------------------------------
     {
         TyphonProcessor a;
-        typhon::Step s; s.vel = 127; s.ratchet = 3; s.len = 2; s.choke = 2; a.pattern.set (3, 5, s);
+        typhon::Step s; s.vel = 127; s.ratchet = 3; s.len = 2; s.choke = 2; s.pitch = -5; s.rev = true; a.pattern.set (3, 29, s);
+        a.pattern.setLock (3, 29, typhon::lkCut, 1234.0f);
         setParam (a, typhon::pid (2, "pitch"), -7.0f);
         setParam (a, "sp_amt", 0.4f);
         juce::MemoryBlock mb; a.getStateInformation (mb);
         TyphonProcessor b; b.setStateInformation (mb.getData(), (int) mb.getSize());
-        const auto t = b.pattern.get (3, 5);
-        CHECK (t.vel == 127 && t.ratchet == 3 && t.len == 2 && t.choke == 2, "état : pas retrouvé à l'identique");
+        const auto t = b.pattern.get (3, 29);
+        CHECK (t.vel == 127 && t.ratchet == 3 && t.len == 2 && t.choke == 2 && t.pitch == -5 && t.rev, "état : pas 30 retrouvé à l'identique (pitch, reverse)");
+        CHECK (std::fabs (b.pattern.lock (3, 29, typhon::lkCut) - 1234.0f) < 0.5f && ! b.pattern.hasLocks (3, 28), "état : verrou retrouvé");
         CHECK (std::fabs (b.apvts.getRawParameterValue (typhon::pid (2, "pitch"))->load() + 7.0f) < 0.01f, "état : réglage de piste retrouvé");
         CHECK (std::fabs (b.apvts.getRawParameterValue ("sp_amt")->load() - 0.4f) < 0.01f, "état : réglage global retrouvé");
     }
@@ -196,7 +288,14 @@ int main (int argc, char** argv)
                     o.setPosition (0); o.truncate();
                     png.writeImageToStream (im, o);
                 };
-                if (auto* b = dynamic_cast<juce::Button*> (findBtn (ui, juce::String::fromUTF8 ("TRANSIENT \xc2\xb7 DYNAMIQUE")))) { b->triggerClick(); juce::MessageManager::getInstance()->runDispatchLoopUntil (50); shot ("seq_dyn.png"); }
+                if (auto* b = dynamic_cast<juce::Button*> (findBtn (ui, "DYN"))) { b->triggerClick(); juce::MessageManager::getInstance()->runDispatchLoopUntil (50); shot ("seq_dyn.png"); }
+                if (auto* b = dynamic_cast<juce::Button*> (findBtn (ui, "GRAIN"))) { b->triggerClick(); juce::MessageManager::getInstance()->runDispatchLoopUntil (50); shot ("seq_grain.png"); }
+                if (auto* b = dynamic_cast<juce::Button*> (findBtn (ui, "SLICE"))) { b->triggerClick(); juce::MessageManager::getInstance()->runDispatchLoopUntil (50); shot ("seq_slice.png"); }
+                if (auto* b = dynamic_cast<juce::Button*> (findBtn (ui, "SAMPLE"))) { b->triggerClick(); juce::MessageManager::getInstance()->runDispatchLoopUntil (50); }
+                if (auto* b = dynamic_cast<juce::Button*> (findBtn (ui, "32 PAS"))) { b->triggerClick(); juce::MessageManager::getInstance()->runDispatchLoopUntil (50); shot ("seq_32.png"); }
+                if (auto* b = dynamic_cast<juce::Button*> (findBtn (ui, juce::String::fromUTF8 ("\xe2\xa4\xa2 AGRANDIR")))) { b->triggerClick(); juce::MessageManager::getInstance()->runDispatchLoopUntil (50); shot ("editor.png"); }
+                if (auto* b = dynamic_cast<juce::Button*> (findBtn (ui, "FERMER"))) { b->triggerClick(); juce::MessageManager::getInstance()->runDispatchLoopUntil (50); }
+                if (auto* b = dynamic_cast<juce::Button*> (findBtn (ui, "MIX"))) { b->triggerClick(); juce::MessageManager::getInstance()->runDispatchLoopUntil (50); shot ("mix.png"); }
                 if (auto* b = dynamic_cast<juce::Button*> (findBtn (ui, "CAPTURE"))) { b->triggerClick(); juce::MessageManager::getInstance()->runDispatchLoopUntil (50); shot ("capture.png"); }
                 if (auto* b = dynamic_cast<juce::Button*> (findBtn (ui, juce::String::fromUTF8 ("PARAM\xc3\x88TRES")))) { b->triggerClick(); juce::MessageManager::getInstance()->runDispatchLoopUntil (50); shot ("settings.png"); }
             }
