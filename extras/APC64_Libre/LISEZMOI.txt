@@ -12,7 +12,11 @@ dans tous les modes. Tu peux aussi désactiver « Télécommande » sur les port
 
 Utilisation
 - Bouton OFF des touch strips = mode USER.
-- Assigner : clique un réglage dans Ableton (il s'encadre), maintiens SHIFT et touche un strip.
+- Assigner : clique un réglage dans Ableton (il s'encadre en couleur), puis touche un strip libre.
+  Pour remplacer l'assignation d'un strip déjà pris : SHIFT + toucher.
+  Pour un plugin (VST) : clique son réglage dans le panneau de l'appareil d'Ableton (bouton
+  « Configure » ou flèche de dépliage), pas dans la fenêtre du plugin — Ableton ne « sélectionne »
+  que les réglages qu'il affiche lui-même. Le plus simple : un Rack et ses 8 macros.
 - Libérer un strip : maintiens CLEAR et touche le strip.
 - En Device / Volume / Pan / Sends / Channel, les strips font leur travail normal ;
   rappuie sur OFF et tes assignations reviennent.

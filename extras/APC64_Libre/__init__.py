@@ -3,7 +3,8 @@
 # comme le mode User de l'APC40 : en OFF, chaque strip pilote le réglage que tu lui as assigné ;
 # en Device / Volume / Pan / Sends / Channel, les strips retrouvent leur rôle normal.
 #
-# Assigner : clique un réglage dans Ableton (il s'encadre), puis maintiens SHIFT et touche le strip.
+# Assigner : clique un réglage dans Ableton (il s'encadre), puis touche un strip libre
+#            (SHIFT + toucher pour remplacer l'assignation d'un strip déjà pris).
 # Désassigner : maintiens CLEAR et touche le strip.
 # Les assignations sont enregistrées avec le projet Live.
 from __future__ import absolute_import, print_function, unicode_literals
@@ -130,7 +131,9 @@ class APC64Libre(_OfficialAPC64):
         self._on_shift.subject = self.elements.shift_button
         self._on_clear.subject = self.elements.clear_button
         self._on_strip_touched.replace_subjects(self.elements.touch_elements_raw)
+        self._on_selected_parameter.subject = self.song.view
         self._on_strip_mode_changed(modes.selected_mode)
+        self.log_message("APC64 Libre : pret ({} strips assignes)".format(sum(1 for p in self._user_paths if p)))
 
     # --- état des modes ---------------------------------------------------------------------
     def _user_mode(self):
@@ -157,7 +160,7 @@ class APC64Libre(_OfficialAPC64):
                 strip.release_parameter()
                 strip.send_midi((0xB0, 104 + i, 0))   # LED éteinte : strip libre
         assigned = sum(1 for p in self._user_paths if p)
-        self.show_message("APC64 Libre : mode USER ({} strip(s) assigné(s)) — SHIFT + strip = assigner le réglage sélectionné".format(assigned))
+        self.show_message("APC64 Libre : mode USER ({} strip(s) assigné(s)) — clique un réglage puis touche un strip".format(assigned))
 
     # --- assigner / désassigner -------------------------------------------------------------------
     @listens("value")
@@ -168,13 +171,30 @@ class APC64Libre(_OfficialAPC64):
     def _on_clear(self, value):
         self._clear_held = value != 0
 
+    def _held(self, element, flag):
+        try:
+            return flag or element.is_pressed()
+        except Exception:
+            return flag
+
+    @listens("selected_parameter")
+    def _on_selected_parameter(self):
+        parameter = self.song.view.selected_parameter
+        if self._user_mode() and liveobj_valid(parameter):
+            self.show_message("APC64 Libre : « {} » choisi — touche un strip pour l'assigner".format(parameter.name))
+
     @listens_group("value")
     def _on_strip_touched(self, value, element):
         if value == 0 or not self._user_mode():
             return
-        if not (self._shift_held or self._clear_held):
-            return
         i = _index_of(self.elements.touch_elements_raw, element)
+        shift = self._held(self.elements.shift_button, self._shift_held)
+        clear = self._held(self.elements.clear_button, self._clear_held)
+        self.log_message("APC64 Libre : strip {} touche (shift={}, clear={})".format(i + 1, shift, clear))
+        self._clear_held = clear
+        # strip libre : un simple toucher assigne le réglage sélectionné ; strip déjà assigné : SHIFT pour changer
+        if not (shift or clear or (0 <= i < STRIPS and self._user_paths[i] is None)):
+            return
         if i < 0:
             return
         if self._clear_held:
@@ -184,7 +204,8 @@ class APC64Libre(_OfficialAPC64):
             parameter = self.song.view.selected_parameter
             path = parameter_path(self.song, parameter) if liveobj_valid(parameter) else None
             if path is None:
-                self.show_message("APC64 Libre : clique d'abord un réglage dans Ableton, puis SHIFT + strip")
+                self.show_message("APC64 Libre : clique d'abord un réglage dans Ableton (bouton d'un appareil Live, volume, pan ou envoi)")
+                self.log_message("APC64 Libre : aucun reglage selectionne")
                 return
             self._user_paths[i] = path
             self.show_message("APC64 Libre : strip {} = {}".format(i + 1, parameter.name))
