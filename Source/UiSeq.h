@@ -12,8 +12,12 @@ namespace tui
     class SeqGrid : public juce::Component, public juce::FileDragAndDropTarget
     {
     public:
-        SeqGrid (Ctx& c) : ctx (c), len16 (c, "16 PAS"), len32 (c, "32 PAS"), page1 (c, "1-16"), page2 (c, "17-32"), followBtn (c, "SUIVRE", true)
+        SeqGrid (Ctx& c) : ctx (c), len16 (c, "16 PAS"), len32 (c, "32 PAS"), page1 (c, "1-16"), page2 (c, "17-32"), followBtn (c, "SUIVRE", true), newBtn (c, "NOUVEAU")
         {
+            addAndMakeVisible (newBtn); newBtn.textSize = 11.0f;
+            newBtn.setTooltip (juce::String::fromUTF8 ("Nouveau pattern : vide le pattern en cours (Ctrl+Z pour revenir) \xc2\xb7 clic droit : tout effacer"));
+            newBtn.onClick = [this] { clearCurrentPattern(); };
+            newBtn.addMouseListener (this, false);
             for (auto* b : { &len16, &len32, &page1, &page2, &followBtn }) { addAndMakeVisible (*b); b->textSize = 11.0f; }
             len16.isOn = [this] { return ctx.proc.seqLength() == 16; };
             len32.isOn = [this] { return ctx.proc.seqLength() == 32; };
@@ -38,6 +42,35 @@ namespace tui
                 b->addMouseListener (this, false);
                 addAndMakeVisible (b);
             }
+        }
+
+        void clearCurrentPattern()
+        {
+            ctx.proc.pattern.clear();
+            focusLane = focusStep = -1; hasSel = false;
+            if (onFocusStep) onFocusStep (selected, -1, false);
+            ctx.proc.undoCommit();
+            repaint();
+        }
+        void newMenu()
+        {
+            juce::PopupMenu m;
+            m.addItem (1, "Vider ce pattern");
+            m.addItem (2, juce::String::fromUTF8 ("Tout remettre \xc3\xa0 z\xc3\xa9ro (patterns A..H, FILL, longueurs de piste)"));
+            juce::Component::SafePointer<SeqGrid> safe (this);
+            m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&newBtn), [safe] (int r)
+            {
+                if (safe == nullptr || r == 0) return;
+                if (r == 2)
+                {
+                    auto& P = safe->ctx.proc;
+                    for (int k = 0; k < TyphonProcessor::numPatterns; ++k) P.clearPattern (k);
+                    for (int l = 0; l < typhon::numLanes; ++l)
+                        if (auto* prm = P.apvts.getParameter (typhon::pid (l, "len"))) prm->setValueNotifyingHost (0.0f);
+                    P.selectPattern (0);
+                }
+                safe->clearCurrentPattern();
+            });
         }
 
         std::function<void (int, int, bool)> onFocusStep;   // (piste, pas, montrer le panneau) : le pas à éditer dans le panneau
@@ -78,13 +111,15 @@ namespace tui
         void resized() override
         {
             auto r = juce::Rectangle<int> (3, 0, getWidth() - 6, topH - 8);
-            len16.setBounds (r.removeFromLeft (70)); r.removeFromLeft (6);
-            len32.setBounds (r.removeFromLeft (70)); r.removeFromLeft (20);
-            page1.setBounds (r.removeFromLeft (70)); r.removeFromLeft (6);
-            page2.setBounds (r.removeFromLeft (70)); r.removeFromLeft (6);
-            followBtn.setBounds (r.removeFromLeft (80));
-            r.removeFromLeft (16);
+            len16.setBounds (r.removeFromLeft (56)); r.removeFromLeft (5);
+            len32.setBounds (r.removeFromLeft (56)); r.removeFromLeft (12);
+            page1.setBounds (r.removeFromLeft (54)); r.removeFromLeft (5);
+            page2.setBounds (r.removeFromLeft (54)); r.removeFromLeft (5);
+            followBtn.setBounds (r.removeFromLeft (64));
+            r.removeFromLeft (12);
             for (int k = 0; k < patBtns.size(); ++k) { patBtns[k]->setBounds (r.removeFromLeft (k == TyphonProcessor::fillPatternIndex ? 44 : 28)); r.removeFromLeft (3); }
+            r.removeFromLeft (5);
+            newBtn.setBounds (r.removeFromLeft (70));
         }
         static constexpr int nameW = 132, outW = 62, chokeW = 70, gap = 10;
 
@@ -395,6 +430,7 @@ namespace tui
             using namespace typhon;
             for (int k = 0; k < patBtns.size(); ++k)
                 if (e.eventComponent == patBtns[k]) { if (e.mods.isPopupMenu()) patternMenu (k); return; }
+            if (e.eventComponent == &newBtn) { if (e.mods.isPopupMenu()) newMenu(); return; }
             const auto p = e.getPosition();
             const int lane = laneAt (p);
             if (lane < 0) return;
@@ -451,6 +487,7 @@ namespace tui
         {
             using namespace typhon;
             for (auto* b : patBtns) if (e.eventComponent == b) return;
+            if (e.eventComponent == &newBtn) return;
             if (selecting)
             {
                 const int l = juce::jlimit (0, numLanes - 1, laneAt (e.getPosition()) < 0 ? (e.y < headerH ? 0 : numLanes - 1) : laneAt (e.getPosition()));
@@ -469,6 +506,7 @@ namespace tui
         void mouseUp (const juce::MouseEvent& e) override
         {
             for (auto* b : patBtns) if (e.eventComponent == b) return;
+            if (e.eventComponent == &newBtn) return;
             if (selecting) { selecting = false; return; }
             using namespace typhon;
             if (dragLane >= 0 && ! dragMoved && ! dragCreated)
@@ -787,6 +825,7 @@ namespace tui
         std::vector<uint64_t> clip;
         Pill len16, len32, page1, page2, followBtn;
         juce::OwnedArray<Pill> patBtns;
+        Pill newBtn;
         std::unique_ptr<juce::FileChooser> chooser;
     };
 }
