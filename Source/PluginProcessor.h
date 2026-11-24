@@ -4,6 +4,7 @@
 #include "Shared.h"
 #include "Diag.h"
 #include "Library.h"
+#include "Apc.h"
 
 class CaptureEngine;
 
@@ -22,6 +23,7 @@ struct TyphonSettings
     std::atomic<int> uiScale { 1 };        // 0 75 %, 1 100 %, 2 125 %, 3 150 %
     std::atomic<int> snapZero { 1 };
     std::atomic<int> captureRate { 0 };    // 0 48 kHz / 24 bits, 1 96 kHz / 32 bits flottant
+    std::atomic<int> apcOn { 0 };          // Akai APC64 en mode Custom sur le canal 16
     juce::String libraryPath() const { const juce::ScopedLock sl (lock); return libPath; }
     void setLibraryPath (const juce::String& p) { { const juce::ScopedLock sl (lock); libPath = p; } save(); }
     juce::CriticalSection lock;
@@ -112,6 +114,10 @@ public:
     bool canRedo() const { return ! redoStack.empty(); }
     static constexpr int cutAllNote = 24;   // C0 : coupe tous les sons
 
+    // --- Akai APC64 (mode Custom, canal 16) ---
+    typhon::apc::Control apcCtl;
+    int apcSelectedLane() const { return apcCtl.selectedLane.load(); }
+
 private:
     void timerCallback() override;
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
@@ -186,6 +192,23 @@ private:
     double lastPpqEnd = -1.0;
     bool prevBarWasFill = false;
     int64_t lastBarIndex = -1;
+
+    struct ApcPattern : typhon::apc::PatternAccess
+    {
+        typhon::Pattern& p; explicit ApcPattern (typhon::Pattern& x) : p (x) {}
+        bool stepOn (int l, int s) const override { return p.get (l, s).on() || p.headOf (l, s) >= 0; }
+        void setStep (int l, int s, int vel) override
+        {
+            const int h = p.headOf (l, s);
+            if (vel == 0 && h >= 0) { auto hs = p.get (l, h); hs.len = s - h; p.set (l, h, hs); return; }   // raccourcit la liaison
+            typhon::Step st; st.vel = vel; p.set (l, s, st);
+            if (vel == 0) p.clearLocks (l, s);
+        }
+        void clearLane (int l) override { for (int s = 0; s < typhon::numSteps; ++s) { p.set (l, s, typhon::Step()); p.clearLocks (l, s); } }
+    } apcPattern { pattern };
+    typhon::apc::Out apcOut;
+    int apcSpSeen = 0;
+    void applyApcActions();
 
     std::unique_ptr<CaptureEngine> captureEngine;
     std::unique_ptr<diag::Watchdog> watchdog;

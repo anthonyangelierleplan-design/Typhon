@@ -31,6 +31,9 @@ namespace tui
                      juce::String::fromUTF8 ("Notes qui jouent les pistes depuis tes clips ou ton clavier. C0 coupe tous les sons."),
                      { { "Carte des notes", { "Typhon", "General MIDI", "EZdrummer" }, &S.midiMap },
                        { "Canal d'entr\xc3\xa9" "e", { "Omni", "10" }, &S.midiChannel, { 0, 10 } } });
+            addCard ("AKAI APC64",
+                     juce::String::fromUTF8 ("Mode Custom, canal 16 : 4 groupes Drum Pads (notes 36, 52, 68, 84) et faders CC 20 \xc3\xa0 27. Pads du bas = jouer, Mute, Roll, Fill ; 4 rang\xc3\xa9" "es du haut = les 32 pas de la piste jou\xc3\xa9" "e en dernier. Voir le guide APC64."),
+                     { { "Contr\xc3\xb4leur", { "Off", "On" }, &S.apcOn } });
             addCard ("INTERFACE", {},
                      { { "Th\xc3\xa8me", { "Atelier", "Nuit", "Phosphore", "Bel Air" }, &S.theme },
                        { "Taille de la fen\xc3\xaatre", { "75 %", "100 %", "125 %", "150 %" }, &S.uiScale },
@@ -65,11 +68,12 @@ namespace tui
             auto top = r.removeFromTop (60);
             closeBtn.setBounds (top.removeFromRight (140).withSizeKeepingCentre (140, 40));
             r.removeFromBottom (20);
-            const int cw = (r.getWidth() - 32) / 3, ch = (r.getHeight() - 16) / 2;
+            const int cols = cards.size() > 6 ? 4 : 3;
+            const int cw = (r.getWidth() - (cols - 1) * 16) / cols, ch = (r.getHeight() - 16) / 2;
             for (size_t i = 0; i < cards.size(); ++i)
             {
                 auto& c = cards[i];
-                c.area = { r.getX() + (int) (i % 3) * (cw + 16), r.getY() + (int) (i / 3) * (ch + 16), cw, ch };
+                c.area = { r.getX() + (int) (i % (size_t) cols) * (cw + 16), r.getY() + (int) (i / (size_t) cols) * (ch + 16), cw, ch };
                 auto in = c.area.reduced (16, 12);
                 in.removeFromTop (24);
                 for (auto& row : c.rows)

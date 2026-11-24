@@ -1,6 +1,7 @@
 // Tests du moteur Typhon (sans JUCE) : g++ -std=c++17 -O2 -I../../Source dsp_tests.cpp -o t && ./t
 #include "Dsp.h"
 #include "Fallback.h"
+#include "Apc.h"
 namespace typhon { enum { lkCut = 4 }; }
 #include <cstdio>
 #include <random>
@@ -183,6 +184,54 @@ int main()
         CHECK ((int) sl.size() == 8 && good == 8, "slice : %d coups trouvés, %d bien placés (8)", (int) sl.size(), good);
         auto sl4 = detectSlices (br, 0.6f, 4);
         CHECK ((int) sl4.size() == 4, "slice : limité à 4 tranches (%d)", (int) sl4.size());
+    }
+
+    // APC64 : plan de la grille, écriture des pas, roll, faders
+    {
+        using namespace typhon::apc;
+        bool ok = true; int seen[64] = {};
+        for (int n = 36; n < 100; ++n) { int c, r; ok &= padPos (n, c, r) && noteAt (c, r) == n; seen[r * 8 + c]++; }
+        for (int k = 0; k < 64; ++k) ok &= seen[k] == 1;
+        int c, r; padPos (36, c, r); ok &= c == 0 && r == 0; padPos (99, c, r); ok &= c == 7 && r == 7; padPos (52, c, r); ok &= c == 4 && r == 0;
+        CHECK (ok && ! padPos (35, c, r) && ! padPos (100, c, r), "apc : 4 groupes Drum Pads = grille 8x8 complète, sans trou ni doublon");
+        CHECK (stepOf (0, 7) == 0 && stepOf (7, 7) == 7 && stepOf (0, 4) == 24 && stepOf (7, 4) == 31, "apc : rangée du haut = pas 1-8, rangée 4 = pas 25-32");
+
+        struct P : PatternAccess { Pattern p; bool stepOn (int l, int s) const override { return p.get (l, s).on(); }
+            void setStep (int l, int s, int v) override { Step st; st.vel = v; p.set (l, s, st); }
+            void clearLane (int l) override { for (int s = 0; s < numSteps; ++s) p.set (l, s, Step()); } } pat;
+        Control ctl; Out out;
+        ctl.noteOn (noteAt (1, 0), 77, 10, pat, 16, out);           // jouer la snare = la sélectionner
+        CHECK (out.numHits == 1 && out.hits[0].lane == 1 && out.hits[0].vel == 77 && ctl.selectedLane.load() == 1, "apc : pad de piste joue et sélectionne");
+        ctl.noteOff (noteAt (1, 0));
+        ctl.noteOn (noteAt (2, 3), 50, 0, pat, 16, out);            // vélocité ACCENT
+        ctl.noteOn (noteAt (4, 7), 10, 0, pat, 16, out);            // pas 5
+        CHECK (pat.p.get (1, 4).vel == 120, "apc : écriture d'un pas à la vélocité choisie (%d)", pat.p.get (1, 4).vel);
+        ctl.noteOn (noteAt (4, 7), 10, 0, pat, 16, out);
+        CHECK (! pat.p.get (1, 4).on(), "apc : second appui = efface le pas");
+        ctl.noteOn (noteAt (0, 4), 10, 0, pat, 16, out);            // pas 25 en 16 pas : ignoré
+        CHECK (! pat.p.get (1, 24).on(), "apc : pas au-delà de la longueur ignorés");
+
+        // roll 1/16 à 120 BPM, transport à l'arrêt : 8 coups par seconde
+        Control rc; Out o2; P p2;
+        rc.noteOn (noteAt (1, 2), 127, 0, p2, 16, o2);              // ROLL 1/16 maintenu
+        o2.numHits = 0; rc.noteOn (noteAt (0, 0), 90, 0, p2, 16, o2);
+        CHECK (o2.numHits == 0, "apc : avec ROLL maintenu, le pad ne joue pas en double");
+        int hits = 0; const int bs = 480;
+        for (int b = 0; b < 100; ++b) { o2.numHits = 0; rc.renderRoll (false, 0.0, 2.0 / 48000.0, bs, o2); hits += o2.numHits; }
+        CHECK (hits == 8, "apc : roll 1/16 libre à 120 BPM = 8 coups en 1 s (%d)", hits);
+        rc.aftertouch (noteAt (0, 0), 30); o2.numHits = 0;
+        for (int b = 0; b < 13; ++b) rc.renderRoll (false, 0.0, 2.0 / 48000.0, bs, o2);
+        CHECK (o2.numHits >= 1 && o2.hits[0].vel == 30, "apc : l'aftertouch règle la vélocité du roll");
+        // calé sur la grille de l'hôte : 1/8 sur une noire = 2 coups, aux positions exactes
+        rc.noteOff (noteAt (1, 2)); rc.noteOn (noteAt (0, 2), 127, 0, p2, 16, o2); o2.numHits = 0;
+        rc.renderRoll (true, 3.9, 1.0 / 48000.0, 48000, o2);          // 3.9 → 4.9 noires
+        CHECK (o2.numHits == 2 && std::abs (o2.hits[0].offset - 4800) <= 1 && std::abs (o2.hits[1].offset - 28800) <= 1, "apc : roll 1/8 calé sur la grille (%d coups)", o2.numHits);
+        rc.noteOff (noteAt (0, 0)); o2.numHits = 0; rc.renderRoll (true, 5.0, 1.0 / 48000.0, 48000, o2);
+        CHECK (o2.numHits == 0, "apc : roll s'arrête au relâchement du pad");
+
+        Control fc; Action a; fc.controller (21, 127);
+        CHECK (fc.queue.pop (a) && a.act == Act::setParam && a.target == tSpBits && a.value == 1.0f, "apc : fader 2 = Bits du grain SP");
+        fc.noteOn (noteAt (4, 2), 100, 0, p2, 16, o2); CHECK (fc.fillHeld.load(), "apc : FILL maintenu"); fc.noteOff (noteAt (4, 2)); CHECK (! fc.fillHeld.load(), "apc : FILL relâché");
     }
 
     std::printf ("\n%s (%d échec%s)\n", fails == 0 ? "TOUT EST BON" : "PROBLÈMES", fails, fails > 1 ? "s" : "");

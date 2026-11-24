@@ -91,6 +91,35 @@ int main (int argc, char** argv)
         auto tail = run (p, h, 0.2);
         CHECK (tail.peak < 1.0e-4f, "MIDI : C0 coupe le crash (reste %.6f)", tail.peak);
 
+        // APC64 (canal 16) : pad de piste, ROLL maintenu, écriture d'un pas
+        p.settings.apcOn.store (1);
+        {
+            const auto s0 = totalHits (p, 1);
+            juce::MidiBuffer a; a.addEvent (juce::MidiMessage::noteOn (16, 37, (juce::uint8) 100), 0); a.addEvent (juce::MidiMessage::noteOff (16, 37), 100);
+            run (p, h, 0.05, &a);
+            CHECK (totalHits (p, 1) == s0 + 1, "APC64 : pad 2 en bas joue la snare");
+            juce::MidiBuffer r; r.addEvent (juce::MidiMessage::noteOn (16, 45, (juce::uint8) 127), 0); r.addEvent (juce::MidiMessage::noteOn (16, 37, (juce::uint8) 90), 1);
+            const auto s1 = totalHits (p, 1);
+            run (p, h, 0.05, &r); run (p, h, 0.95);
+            juce::MidiBuffer off; off.addEvent (juce::MidiMessage::noteOff (16, 37), 0); off.addEvent (juce::MidiMessage::noteOff (16, 45), 0);
+            run (p, h, 0.05, &off);
+            const auto rolled = totalHits (p, 1) - s1;
+            const auto s2 = totalHits (p, 1); run (p, h, 0.5);
+            CHECK (rolled >= 6 && rolled <= 10 && totalHits (p, 1) == s2, "APC64 : roll 1/16 maintenu 1 s = %u coups, s'arrête au relâchement", rolled);
+            const bool was = p.pattern.get (1, 2).on();
+            juce::MidiBuffer w; w.addEvent (juce::MidiMessage::noteOn (16, 82, (juce::uint8) 100), 0);   // rangée du haut, 3e pad
+            run (p, h, 0.02, &w);
+            CHECK (p.pattern.get (1, 2).on() != was, "APC64 : pad du haut = bascule le pas 3 de la piste sélectionnée");
+            run (p, h, 0.02, &w);
+            CHECK (p.pattern.get (1, 2).on() == was, "APC64 : second appui = retour à l'état d'origine");
+            const auto k1 = totalHits (p, 0);
+            juce::MidiBuffer n1; n1.addEvent (juce::MidiMessage::noteOn (16, 36, (juce::uint8) 100), 0);
+            run (p, h, 0.02, &n1);
+            CHECK (totalHits (p, 0) == k1 + 1, "APC64 : le canal 16 ne passe plus par la carte de notes");
+        }
+        p.settings.apcOn.store (0);
+        run (p, h, 0.06, &cut); run (p, h, 0.2);
+
         // gate MIDI : note courte = son court
         setParam (p, typhon::pid (6, "gate"), 1.0f);
         juce::MidiBuffer g; g.addEvent (juce::MidiMessage::noteOn (1, 49, (juce::uint8) 120), 0); g.addEvent (juce::MidiMessage::noteOff (1, 49), 2400);

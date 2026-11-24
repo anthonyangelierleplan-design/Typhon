@@ -64,3 +64,31 @@ format de capture, stéréo / multi-out, carte MIDI et canal, thème (Atelier, N
 GitHub Actions compile le VST3 Windows à chaque push (release `latest`, fichier `Typhon-VST3-Windows.zip`).
 En local : `cmake -B build && cmake --build build --config Release`.
 Tests : voir `tools/tests/LISEZMOI.txt`.
+
+## Akai APC64 (mode Custom)
+
+Typhon se pilote depuis l'APC64 en **mode Custom**, sur le **canal 16**.
+
+**Réglage dans l'APC64 Project Editor (une seule fois)**
+1. Glisser 4 groupes **Drum Pads** (4×4) sur la grille, canal 16 :
+   bas-gauche = note **36** (C1 dans Ableton), bas-droite = **52** (E2), haut-gauche = **68** (G#3), haut-droite = **84** (C5).
+2. Les 8 touch faders : *Single (1 CC)*, canal 16, **CC 20 à 27**.
+3. Couleurs conseillées (Pad Off) : rangée 1 orange, rangée 2 gris, rangée 3 bleu, rangée 4 blanc, 4 rangées du haut gris foncé.
+4. *Send Project* vers un slot de l'APC64.
+
+**Dans Ableton** : une piste MIDI « APC → Typhon », entrée = APC64 canal 16, Monitor = In, sortie = la piste de Typhon.
+Dans Typhon : Paramètres → Akai APC64 → On.
+
+**La grille (rangée 1 = en bas)**
+
+| Rangée | Pads 1-4 | Pads 5-8 |
+|---|---|---|
+| 8 → 5 | les 32 pas de la piste sélectionnée (rangée 8 = pas 1-8 … rangée 5 = pas 25-32) | |
+| 4 | vélocité d'écriture : Doux · Normal · Accent · Au toucher | Effacer la piste · Annuler · Rétablir · 16/32 pas |
+| 3 | ROLL (maintenir) 1/8 · 1/16 · 1/32 · 1/16T | FILL (maintenir) · Choke global · Couper tout · SP Authentique/Propre |
+| 2 | Mute pistes 1-4 | Mute pistes 5-8 |
+| 1 | jouer Kick · Snare · Ghost · Rim | jouer Hat fermé · Hat ouvert · Crash · Perc |
+
+Jouer une piste la sélectionne. Roll : maintenir une cadence + un ou plusieurs pads de piste ; calé sur la grille quand Ableton joue, au tempo sinon ; l'aftertouch du pad règle la force du roll.
+
+**Faders** : Grain SP · Bits · Fréquence · Filtre SP | Filtre · Decay · Pitch de la piste sélectionnée | Swing.

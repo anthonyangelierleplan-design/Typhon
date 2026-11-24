@@ -29,6 +29,7 @@ void TyphonSettings::load()
     get ("uiScale", uiScale, 0, 3);
     get ("snapZero", snapZero, 0, 1);
     get ("captureRate", captureRate, 0, 1);
+    get ("apcOn", apcOn, 0, 1);
     { const juce::ScopedLock sl (lock); libPath = xml->getStringAttribute ("libraryPath", libPath); }
 }
 
@@ -45,6 +46,7 @@ void TyphonSettings::save() const
     x.setAttribute ("uiScale", uiScale.load());
     x.setAttribute ("snapZero", snapZero.load());
     x.setAttribute ("captureRate", captureRate.load());
+    x.setAttribute ("apcOn", apcOn.load());
     { const juce::ScopedLock sl (lock); x.setAttribute ("libraryPath", libPath); }
     file().getParentDirectory().createDirectory();
     x.writeTo (file());
@@ -234,7 +236,7 @@ TyphonProcessor::TyphonProcessor()
     watchdog = std::make_unique<diag::Watchdog>();
     captureEngine = std::make_unique<CaptureEngine> (*this);
     stable = takeSnapshot();
-    startTimerHz (4);
+    startTimerHz (25);
 }
 
 TyphonProcessor::~TyphonProcessor()
@@ -245,8 +247,53 @@ TyphonProcessor::~TyphonProcessor()
     diag::removeCrashHandler();
 }
 
+void TyphonProcessor::applyApcActions()
+{
+    using namespace typhon::apc;
+    Action a; bool commit = false;
+    auto param = [&] (const Action& x) -> juce::RangedAudioParameter*
+    {
+        const int l = juce::jlimit (0, numLanes - 1, (int) x.lane);
+        switch ((Target) x.target)
+        {
+            case tSpAmt: return apvts.getParameter ("sp_amt");
+            case tSpBits: return apvts.getParameter ("sp_bits");
+            case tSpRate: return apvts.getParameter ("sp_rate");
+            case tSpFilt: return apvts.getParameter ("sp_filt");
+            case tLaneCut: return apvts.getParameter (pid (l, "fcut"));
+            case tLaneDecay: return apvts.getParameter (pid (l, "decay"));
+            case tLanePitch: return apvts.getParameter (pid (l, "pitch"));
+            case tSwing: return apvts.getParameter ("swing");
+            case tLaneMute: return apvts.getParameter (pid (l, "mute"));
+            case tChokeAll: return apvts.getParameter ("choke_all");
+            case tSeqLen: return apvts.getParameter ("seq_len");
+        }
+        return nullptr;
+    };
+    while (apcCtl.queue.pop (a))
+    {
+        switch (a.act)
+        {
+            case Act::setParam:
+                if (auto* p = param (a)) { p->beginChangeGesture(); p->setValueNotifyingHost (juce::jlimit (0.0f, 1.0f, a.value)); p->endChangeGesture(); commit = true; }
+                break;
+            case Act::toggleParam:
+                if (auto* p = param (a)) { p->beginChangeGesture(); p->setValueNotifyingHost (p->getValue() > 0.5f ? 0.0f : 1.0f); p->endChangeGesture(); }
+                break;
+            case Act::commit: commit = true; break;
+            case Act::undo: undo(); commit = false; break;
+            case Act::redo: redo(); commit = false; break;
+            default: break;
+        }
+    }
+    const int sp = apcCtl.spModeToggle.load();
+    if (sp != apcSpSeen) { if ((sp - apcSpSeen) & 1) { settings.spMode.store (1 - settings.spMode.load()); settings.save(); } apcSpSeen = sp; }
+    if (commit) undoCommit();
+}
+
 void TyphonProcessor::timerCallback()
 {
+    applyApcActions();
     // libère les anciens jeux de samples quand plus aucune voix ne les tient
     const juce::ScopedLock sl (graveLock);
     graveyard.erase (std::remove_if (graveyard.begin(), graveyard.end(),
@@ -515,9 +562,19 @@ void TyphonProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     // 1) MIDI
     const int chan = settings.midiChannel.load();
     const int map = juce::jlimit (0, 2, settings.midiMap.load());
+    const bool apcOn = settings.apcOn.load() == 1;
+    apcOut.numHits = 0; apcOut.cutAll = false;
     for (const auto m : midi)
     {
         const auto msg = m.getMessage();
+        if (apcOn && msg.getChannel() == typhon::apc::channel)
+        {
+            if (msg.isNoteOn()) apcCtl.noteOn (msg.getNoteNumber(), msg.getVelocity(), m.samplePosition, apcPattern, seqLength(), apcOut);
+            else if (msg.isNoteOff()) apcCtl.noteOff (msg.getNoteNumber());
+            else if (msg.isAftertouch()) apcCtl.aftertouch (msg.getNoteNumber(), msg.getAfterTouchValue());
+            else if (msg.isController()) apcCtl.controller (msg.getControllerNumber(), msg.getControllerValue());
+            continue;
+        }
         if (chan != 0 && msg.getChannel() != chan) continue;
         if (msg.isNoteOn() && msg.getNoteNumber() == cutAllNote) { addEv (m.samplePosition, -1, 0, 0, -1); continue; }
         if (msg.isNoteOff())
@@ -530,6 +587,8 @@ void TyphonProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         for (int l = 0; l < numLanes; ++l)
             if (midiMaps[map][l] == msg.getNoteNumber()) addEv (m.samplePosition, l, msg.getVelocity(), 0, -1);
     }
+    if (apcOut.cutAll) addEv (0, -1, 0, 0, -1);
+    for (int k = 0; k < apcOut.numHits; ++k) addEv (apcOut.hits[k].offset, apcOut.hits[k].lane, apcOut.hits[k].vel, 0, -1);
 
     // Page CAPTURE ouverte : EZdrummer tourne en continu (son moteur reste actif), s'entend et reçoit les notes
     if (captureEngine != nullptr && captureEngine->monitor.load())
@@ -576,7 +635,7 @@ void TyphonProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         const double swing = pSwing->load();
         const int len = seqLength();
         const double loopPpq = len * 0.25;
-        const bool manualFill = pFill->load() > 0.5f;
+        const bool manualFill = pFill->load() > 0.5f || (apcOn && apcCtl.fillHeld.load());
         const int autoEvery = (int) pFillAuto->load() == 1 ? 4 : ((int) pFillAuto->load() == 2 ? 8 : 0);
         auto barIsFill = [&] (int64_t bar) { return manualFill || (autoEvery > 0 && bar >= 0 && (bar % autoEvery) == autoEvery - 1); };
         FillOptions fo;
@@ -631,6 +690,14 @@ void TyphonProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     }
     else curStep.store (-1);
     fillNow.store (fillOnNow);
+
+    // ROLL de l'APC64 : calé sur la grille quand Ableton joue, horloge libre au tempo sinon
+    if (apcOn)
+    {
+        apcOut.numHits = 0;
+        apcCtl.renderRoll (playing, ppq, bpm / 60.0 / sr, n, apcOut);
+        for (int k = 0; k < apcOut.numHits; ++k) addEv (apcOut.hits[k].offset, apcOut.hits[k].lane, apcOut.hits[k].vel, 0, -1);
+    }
 
     diag::audio ("rendu des voix");
     // 4) Rendu des voix entre les événements (tri par insertion : stable, sans allocation)
