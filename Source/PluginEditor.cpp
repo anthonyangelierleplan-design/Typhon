@@ -192,17 +192,24 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
     bool keyPressed (const juce::KeyPress& k) override
     {
         const auto m = k.getModifiers();
-        if (! m.isCommandDown()) return false;
         const int c = k.getKeyCode();
+        if (page == 0 && ! editorOpen)
+        {
+            if (c == juce::KeyPress::escapeKey) { grid.clearSelectionMark(); return true; }
+            if ((c == juce::KeyPress::deleteKey || c == juce::KeyPress::backspaceKey) && grid.hasSelection()) { grid.clearSelectionSteps(); ctx.proc.undoCommit(); return true; }
+            if (m.isCommandDown() && (c == 'D' || c == 'd')) { grid.duplicateSelection(); ctx.proc.undoCommit(); return true; }
+            if (m.isCommandDown() && (c == 'C' || c == 'c')) { grid.copySelection(); return true; }
+            if (m.isCommandDown() && (c == 'V' || c == 'v')) { grid.pasteAtSelection(); grid.repaint(); ctx.proc.undoCommit(); return true; }
+        }
+        if (! m.isCommandDown()) return false;
         if ((c == 'Z' || c == 'z') && ! m.isShiftDown()) { doUndo (false); return true; }
         if (c == 'Y' || c == 'y' || ((c == 'Z' || c == 'z') && m.isShiftDown())) { doUndo (true); return true; }
         return false;
     }
     // chaque action à la souris (et les menus qui suivent) devient une étape d'annulation
-    void mouseDown (const juce::MouseEvent& e) override
+    void mouseDown (const juce::MouseEvent&) override
     {
         uiActiveUntil = juce::Time::getMillisecondCounter() + 4000;
-        if (dynamic_cast<juce::TextEditor*> (e.eventComponent) == nullptr) grabKeyboardFocus();
     }
     void mouseUp (const juce::MouseEvent&) override
     {
@@ -373,7 +380,7 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
     Pill tabSeq, tabCap, tabMix, fillSet, chokeAllBtn, undoBtn, redoBtn, settingsBtn;
     juce::uint32 uiActiveUntil = 0;
     int undoTick = 0;
-    juce::TooltipWindow tooltips { this, 600 };
+    juce::SharedResourcePointer<juce::TooltipWindow> tooltips;
     bool editorOpen = false;
     DragMidiButton dragBtn;
     FillButton fillBtn;

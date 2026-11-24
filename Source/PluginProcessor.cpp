@@ -594,7 +594,8 @@ void TyphonProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
                         // durée : liaison = jusqu'au bout des pas fusionnés ; option « durée limitée au pas » = le son s'arrête à la fin de son pas
                         // (ou de sa part de pas pour un ratchet / un pas divisé, ou de son coup de fill)
                         int64_t gate = -1;
-                        const bool limit = lp[lane].steplen->load() > 0.5f;
+                        const bool limit = fromFill ? lp[lane].steplen->load() > 0.5f
+                                                    : (s.dur == 1 || (s.dur == 0 && lp[lane].steplen->load() > 0.5f));
                         if (! fromFill && s.len > 1) gate = (int64_t) ((s.len * 0.25 - h.at[k] * 0.25) / ppqPerSample);
                         else if (limit)
                         {

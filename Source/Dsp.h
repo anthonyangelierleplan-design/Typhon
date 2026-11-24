@@ -37,10 +37,11 @@ namespace typhon
     //  bits 15..16 choke du pas : 0 = suit la piste, 1 = toujours, 2 = laisse sonner
     //  bits 17..21 pitch du pas + 12 (-12..+12 demi-tons)
     //  bit  22     coup joué à l'envers
+    //  bits 23..24 durée du pas : 0 = suit la piste, 1 = limitée au pas, 2 = libre
     // ------------------------------------------------------------------------
     struct Step
     {
-        int vel = 0, ratchet = 1, len = 1, choke = 0, pitch = 0;
+        int vel = 0, ratchet = 1, len = 1, choke = 0, pitch = 0, dur = 0;
         bool split = false, rev = false;
 
         bool on() const { return vel > 0; }
@@ -53,7 +54,8 @@ namespace typhon
                  | ((uint32_t) ((std::max (1, std::min (32, len)) - 1) & 31) << 10)
                  | ((uint32_t) (choke & 3) << 15)
                  | ((uint32_t) ((std::max (-12, std::min (12, pitch)) + 12) & 31) << 17)
-                 | ((uint32_t) (rev ? 1 : 0) << 22);
+                 | ((uint32_t) (rev ? 1 : 0) << 22)
+                 | ((uint32_t) (dur & 3) << 23);
         }
         static Step unpack (uint32_t v)
         {
@@ -66,6 +68,7 @@ namespace typhon
             s.pitch = (int) ((v >> 17) & 31) - 12;
             if (s.pitch < -12 || s.pitch > 12) s.pitch = 0;
             s.rev = ((v >> 22) & 1) != 0;
+            s.dur = (int) ((v >> 23) & 3); if (s.dur > 2) s.dur = 0;
             return s;
         }
     };

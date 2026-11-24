@@ -197,6 +197,12 @@ namespace tui
                             tri.addTriangle (bx, by, bx + 6.0f, by - 4.0f, bx + 6.0f, by + 4.0f);
                             g.setColour (t.bg); g.fillPath (tri);
                         }
+                        if (s.dur != 0)
+                        {
+                            g.setColour (s.dur == 1 ? t.bg : t.lcdTx);
+                            if (s.dur == 1) g.fillRect (r.getRight() - 4.0f, r.getY() + 5.0f, 2.0f, r.getHeight() - 10.0f);   // coupé à la fin du pas
+                            else { g.setFont (mono (10.0f, true)); g.drawText (juce::String::fromUTF8 ("\xe2\x86\x92"), r.toNearestInt().reduced (3, 4), juce::Justification::topRight); }
+                        }
                         if (s.pitch != 0)
                         {
                             g.setColour (t.bg); g.setFont (mono (10.0f, true));
@@ -223,9 +229,23 @@ namespace tui
                 }
             }
 
+            // zone sélectionnée
+            if (hasSel)
+            {
+                const int a = std::max (selS0, off), b = std::min (selS1, off + 15);
+                if (a <= b)
+                {
+                    auto r0 = stepRect (selL0, a), r1 = stepRect (selL1, b);
+                    auto box = r0.getUnion (r1).expanded (3.0f);
+                    g.setColour (t.lcdTx.withAlpha (0.12f)); g.fillRoundedRectangle (box, 6.0f);
+                    g.setColour (t.lcdTx); g.drawRoundedRectangle (box, 6.0f, 2.0f);
+                }
+            }
+
             g.setColour (t.sub);
             g.setFont (font (12.0f));
-            g.drawFittedText (juce::String::fromUTF8 ("Clic : allumer / \xc3\xa9teindre \xc2\xb7 Clic + glisser \xe2\x86\x92 : lier (note tenue) \xc2\xb7 Clic droit : options du pas \xc2\xb7 "
+            g.drawFittedText (juce::String::fromUTF8 ("Maj + glisser : s\xc3\xa9lectionner \xc2\xb7 Ctrl+D : dupliquer \xc2\xb7 Ctrl+C / V : copier / coller \xc2\xb7 Suppr : effacer \xc2\xb7 "
+                                                     "Ctrl+Z : annuler \xc2\xb7 ") + juce::String::fromUTF8 ("Clic : allumer / \xc3\xa9teindre \xc2\xb7 Clic + glisser \xe2\x86\x92 : lier (note tenue) \xc2\xb7 Clic droit : options du pas \xc2\xb7 "
                                                      "Clic sur une piste : \xc3\xa9" "couter \xc2\xb7 Glisse un WAV sur une piste pour le charger"),
                               0, headerH + numLanes * (rowH + rowGap) + 2, getWidth(), 18, juce::Justification::centredLeft, 1);
         }
@@ -277,7 +297,21 @@ namespace tui
             if (j < 0) return;
             select (lane);
             auto& pat = ctx.proc.pattern;
-            if (e.mods.isPopupMenu()) { stepMenu (lane, j); return; }
+            if (e.mods.isPopupMenu())
+            {
+                if (inSelection (lane, j)) selectionMenu (lane, j);
+                else stepMenu (lane, j);
+                return;
+            }
+            // Maj + glisser : sélection d'une zone
+            if (e.mods.isShiftDown())
+            {
+                hasSel = true; selAnchorLane = lane; selAnchorStep = j;
+                setSel (lane, j, lane, j);
+                selecting = true; dragLane = -1;
+                return;
+            }
+            if (hasSel) { hasSel = false; repaint(); }
 
             Step s = pat.get (lane, j);
             if (! s.on() && pat.headOf (lane, j) >= 0) { dragLane = -1; return; }   // dans une liaison
@@ -289,6 +323,13 @@ namespace tui
         void mouseDrag (const juce::MouseEvent& e) override
         {
             using namespace typhon;
+            if (selecting)
+            {
+                const int l = juce::jlimit (0, numLanes - 1, laneAt (e.getPosition()) < 0 ? (e.y < headerH ? 0 : numLanes - 1) : laneAt (e.getPosition()));
+                const int j = stepAt ({ std::max (e.x, stepsX0()), e.y });
+                if (j >= 0) setSel (selAnchorLane, selAnchorStep, l, j);
+                return;
+            }
             if (dragLane < 0) return;
             const int j = stepAt (e.getPosition());
             if (j < 0 || j <= dragStep) { if (j == dragStep && dragMoved) setLen (dragLane, dragStep, 1); return; }
@@ -299,6 +340,7 @@ namespace tui
 
         void mouseUp (const juce::MouseEvent&) override
         {
+            if (selecting) { selecting = false; return; }
             using namespace typhon;
             if (dragLane >= 0 && ! dragMoved && ! dragCreated)
                 ctx.proc.pattern.set (dragLane, dragStep, Step());
@@ -324,7 +366,108 @@ namespace tui
             repaint();
         }
 
+        // --- sélection, copier / coller / dupliquer ---------------------------------
+        bool hasSelection() const { return hasSel; }
+        void clearSelectionMark() { hasSel = false; repaint(); }
+
+        void copySelection()
+        {
+            if (! hasSel) return;
+            auto& pat = ctx.proc.pattern;
+            clipBlock.clear();
+            clipH = selL1 - selL0 + 1; clipW = selS1 - selS0 + 1;
+            for (int l = selL0; l <= selL1; ++l)
+                for (int st = selS0; st <= selS1; ++st)
+                {
+                    Cell c; c.step = pat.steps[l][st].load();
+                    for (int k = 0; k < typhon::numLocks; ++k) c.locks[k] = pat.lock (l, st, k);
+                    clipBlock.push_back (c);
+                }
+        }
+        void pasteAt (int lane, int step)
+        {
+            if (clipBlock.empty()) return;
+            auto& pat = ctx.proc.pattern;
+            const int len = ctx.proc.seqLength();
+            for (int dl = 0; dl < clipH; ++dl)
+                for (int ds = 0; ds < clipW; ++ds)
+                {
+                    const int l = lane + dl, st = step + ds;
+                    if (l >= typhon::numLanes || st >= len) continue;
+                    const auto& c = clipBlock[(size_t) (dl * clipW + ds)];
+                    pat.steps[l][st].store (c.step);
+                    for (int k = 0; k < typhon::numLocks; ++k) pat.setLock (l, st, k, c.locks[k]);
+                }
+            hasSel = true;
+            setSel (lane, step, std::min (typhon::numLanes - 1, lane + clipH - 1), std::min (len - 1, step + clipW - 1));
+        }
+        void pasteAtSelection() { if (hasSel) pasteAt (selL0, selS0); }
+        // Dupliquer : copie la zone juste après elle-même (passe en 32 pas si besoin), la sélection suit la copie
+        void duplicateSelection()
+        {
+            if (! hasSel) return;
+            const int w = selS1 - selS0 + 1;
+            const int dest = selS1 + 1;
+            if (ctx.proc.seqLength() == 16 && dest + w <= 32 && dest + w > 16)
+                if (auto* p = ctx.proc.apvts.getParameter ("seq_len")) p->setValueNotifyingHost (1.0f);
+            if (dest >= ctx.proc.seqLength()) return;
+            copySelection();
+            pasteAt (selL0, dest);
+            if (ctx.proc.seqLength() == 32) { page = selS0 / 16; follow = false; }
+            repaint();
+        }
+        void clearSelectionSteps()
+        {
+            if (! hasSel) return;
+            auto& pat = ctx.proc.pattern;
+            for (int l = selL0; l <= selL1; ++l)
+                for (int st = selS0; st <= selS1; ++st) { pat.set (l, st, typhon::Step()); pat.clearLocks (l, st); }
+            repaint();
+        }
+
     private:
+        struct Cell { uint32_t step = 0; float locks[typhon::numLocks] {}; };
+        std::vector<Cell> clipBlock;
+        int clipW = 0, clipH = 0;
+        bool hasSel = false, selecting = false;
+        int selL0 = 0, selL1 = 0, selS0 = 0, selS1 = 0, selAnchorLane = 0, selAnchorStep = 0;
+
+        void setSel (int l0, int s0, int l1, int s1)
+        {
+            selL0 = std::min (l0, l1); selL1 = std::max (l0, l1);
+            selS0 = std::min (s0, s1); selS1 = std::max (s0, s1);
+            repaint();
+        }
+        bool inSelection (int lane, int step) const { return hasSel && lane >= selL0 && lane <= selL1 && step >= selS0 && step <= selS1; }
+
+        void selectionMenu (int lane, int step)
+        {
+            juce::ignoreUnused (lane, step);
+            juce::PopupMenu m;
+            m.addSectionHeader (juce::String::fromUTF8 ("S\xc3\xa9lection : ") + juce::String (selL1 - selL0 + 1) + " piste(s) x " + juce::String (selS1 - selS0 + 1) + " pas");
+            m.addItem (1, "Dupliquer (Ctrl+D)");
+            m.addItem (2, "Copier (Ctrl+C)");
+            m.addItem (3, "Coller ici (Ctrl+V)", ! clipBlock.empty());
+            m.addSeparator();
+            m.addItem (4, "Effacer (Suppr)");
+            m.addItem (5, juce::String::fromUTF8 ("D\xc3\xa9s\xc3\xa9lectionner (Echap)"));
+            juce::Component::SafePointer<SeqGrid> safe (this);
+            m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this).withMousePosition(), [safe] (int r)
+            {
+                if (safe == nullptr) return;
+                switch (r)
+                {
+                    case 1: safe->duplicateSelection(); break;
+                    case 2: safe->copySelection(); break;
+                    case 3: safe->pasteAtSelection(); break;
+                    case 4: safe->clearSelectionSteps(); break;
+                    case 5: safe->hasSel = false; break;
+                    default: break;
+                }
+                safe->repaint();
+            });
+        }
+
         void select (int lane) { selected = lane; if (onSelectLane) onSelectLane (lane); repaint(); }
 
         void setLen (int lane, int head, int len)
@@ -375,6 +518,11 @@ namespace tui
             chokeM.addItem (22, "Laisse sonner", true, s.choke == 2);
             m.addSubMenu ("Choke" + juce::String (s.choke == 1 ? " (toujours)" : (s.choke == 2 ? " (laisse sonner)" : "")), chokeM);
 
+            juce::PopupMenu durM;
+            durM.addItem (40, "Suit la piste", true, s.dur == 0);
+            durM.addItem (41, juce::String::fromUTF8 ("Limit\xc3\xa9" "e au pas"), true, s.dur == 1);
+            durM.addItem (42, juce::String::fromUTF8 ("Libre (jou\xc3\xa9" "e comme r\xc3\xa9gl\xc3\xa9" "e)"), true, s.dur == 2);
+            m.addSubMenu (juce::String::fromUTF8 ("Dur\xc3\xa9" "e") + juce::String (s.dur == 1 ? juce::String::fromUTF8 (" (limit\xc3\xa9" "e)") : (s.dur == 2 ? juce::String (" (libre)") : juce::String())), durM);
             m.addItem (10, juce::String::fromUTF8 ("Jouer \xc3\xa0 l'envers (reverse)"), true, s.rev);
 
             lockM.addItem (30, juce::String::fromUTF8 ("R\xc3\xa9gler ce pas..."));
@@ -382,6 +530,7 @@ namespace tui
             m.addSubMenu ("Verrous" + juce::String (pat.hasLocks (lane, at) ? juce::String::fromUTF8 (" \xe2\x97\x8f") : juce::String()), lockM);
             m.addSeparator();
             m.addItem (9, "Effacer le pas", s.on() || pat.hasLocks (lane, at));
+            if (! clipBlock.empty()) m.addItem (50, juce::String::fromUTF8 ("Coller ici (Ctrl+V)"));
 
             juce::Component::SafePointer<SeqGrid> safe (this);
             m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this).withMousePosition(),
@@ -403,6 +552,8 @@ namespace tui
                         case 10: turnOn(); x.rev = ! x.rev; break;
                         case 20: case 21: case 22: turnOn(); x.choke = r - 20; break;
                         case 30: turnOn(); pat.set (lane, at, x); if (safe->onLockStep) safe->onLockStep (lane, at); safe->repaint(); return;
+                        case 40: case 41: case 42: turnOn(); x.dur = r - 40; break;
+                        case 50: safe->pasteAt (lane, at); return;
                         case 31: pat.clearLocks (lane, at); break;
                         default: if (r >= 200 && r <= 224) { turnOn(); x.pitch = r - 212; } break;
                     }
