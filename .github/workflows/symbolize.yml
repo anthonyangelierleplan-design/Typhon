@@ -32,5 +32,7 @@ jobs:
             if ($o -eq "") { continue }
             $addr = "0x{0:x}" -f ($base + [Convert]::ToInt64($o, 16))
             Write-Host "==== $o"
-            & llvm-symbolizer --obj="$($bin.FullName)" --pdb="$($pdb.FullName)" --inlining --functions=linkage $addr
+            & llvm-symbolizer --obj="$($bin.FullName)" --inlining --functions=linkage --demangle $addr
           }
+          $a = $base + [Convert]::ToInt64("${{ github.event.inputs.offsets }}".Split(" ")[0], 16)
+          & llvm-objdump -d --no-show-raw-insn --start-address=$($a - 48) --stop-address=$($a + 24) "$($bin.FullName)"
