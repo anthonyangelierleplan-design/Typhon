@@ -37,7 +37,8 @@ target_sources(Typhon PRIVATE
     Source/PluginProcessor.cpp
     Source/PluginEditor.cpp
     Source/Capture.cpp
-    Source/Diag.cpp)
+    Source/Diag.cpp
+    Source/FontData.cpp)
 
 target_compile_definitions(Typhon PUBLIC
     JUCE_WEB_BROWSER=0

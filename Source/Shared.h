@@ -38,24 +38,29 @@ namespace typhon
     {
         const char* name;
         juce::Colour bg, panel, panel2, head, headTx, headSub, lcdBg, lcdTx, acc, acc2, off, offBeat, tx, sub, knob, knobEdge, bottom, bottomTx;
+        juce::Colour groups[4];   // couleurs des pas par groupe de 4 (façon TR-808), transparent = couleur d'action
+        bool wood = false;        // flancs en bois (façon LinnDrum)
+        float grain = 0.06f;      // grain de peinture de la façade
+        bool hasGroups() const { return groups[0].getAlpha() != 0; }
     };
 
+    constexpr int numThemes = 6;
     inline const Theme& theme (int i)
     {
-        static const Theme t[4] = {
-            { "Atelier",   juce::Colour (0xff1d1d1f), juce::Colour (0xff252528), juce::Colour (0xff2a2a2d), juce::Colour (0xffcfc8bb), juce::Colour (0xff1d1d1f), juce::Colour (0xff3b3a37),
-                           juce::Colour (0xff0f1a12), juce::Colour (0xff7dffa0), juce::Colour (0xffff5a1f), juce::Colour (0xffb84a22), juce::Colour (0xff2a2a2d), juce::Colour (0xff38383d),
-                           juce::Colour (0xffe8e6e1), juce::Colour (0xffa8a8a8), juce::Colour (0xff333338), juce::Colour (0xff48484e), juce::Colour (0xffcfc8bb), juce::Colour (0xff1d1d1f) },
-            { "Nuit",      juce::Colour (0xff0d0f14), juce::Colour (0xff141924), juce::Colour (0xff1a1f2b), juce::Colour (0xff161b26), juce::Colour (0xffd6e4ff), juce::Colour (0xff8d9bb5),
-                           juce::Colour (0xff06121c), juce::Colour (0xff4fc3ff), juce::Colour (0xff4fc3ff), juce::Colour (0xff2a6f99), juce::Colour (0xff1a1f2b), juce::Colour (0xff242b3b),
-                           juce::Colour (0xffd6e4ff), juce::Colour (0xff8d9bb5), juce::Colour (0xff1f2533), juce::Colour (0xff36405a), juce::Colour (0xff161b26), juce::Colour (0xffd6e4ff) },
-            { "Phosphore", juce::Colour (0xff050805), juce::Colour (0xff0b120c), juce::Colour (0xff0f1a12), juce::Colour (0xff0b120c), juce::Colour (0xff7dffa0), juce::Colour (0xff6fae80),
-                           juce::Colour (0xff020502), juce::Colour (0xff7dffa0), juce::Colour (0xff7dffa0), juce::Colour (0xff3c8a50), juce::Colour (0xff0f1a12), juce::Colour (0xff17281b),
-                           juce::Colour (0xffb9f5c8), juce::Colour (0xff6fae80), juce::Colour (0xff0f1a12), juce::Colour (0xff2c5a38), juce::Colour (0xff0b120c), juce::Colour (0xff7dffa0) },
-            { "Bel Air",   juce::Colour (0xffefe6d2), juce::Colour (0xffe4d9c1), juce::Colour (0xffddd2bb), juce::Colour (0xff2a8c8c), juce::Colour (0xfffbf7ee), juce::Colour (0xffd8f0ee),
-                           juce::Colour (0xff1f3b3b), juce::Colour (0xffbff0e6), juce::Colour (0xffc0392b), juce::Colour (0xffe07b5f), juce::Colour (0xffddd2bb), juce::Colour (0xffcfc3a9),
-                           juce::Colour (0xff2b2620), juce::Colour (0xff5c544a), juce::Colour (0xffc9c1ae), juce::Colour (0xffb8b8b8), juce::Colour (0xff2a8c8c), juce::Colour (0xfffbf7ee) }
+        static const Theme t[numThemes] = {
+            { "Atelier", juce::Colour (0xff1d1d1f), juce::Colour (0xff252528), juce::Colour (0xff2d2d31), juce::Colour (0xffd3ccbe), juce::Colour (0xff1d1d1f), juce::Colour (0xff4a4740), juce::Colour (0xff0d1810), juce::Colour (0xff8dffb0), juce::Colour (0xffff5a1f), juce::Colour (0xffb84a22), juce::Colour (0xff2b2b2f), juce::Colour (0xff3d3d43), juce::Colour (0xffecebe6), juce::Colour (0xffa6a6ab), juce::Colour (0xff2a2a2e), juce::Colour (0xff55555b), juce::Colour (0xffcfc8bb), juce::Colour (0xff1d1d1f),
+              { juce::Colour(), juce::Colour(), juce::Colour(), juce::Colour() }, false, 0.06f },
+            { "Nuit", juce::Colour (0xff0d0f14), juce::Colour (0xff151a25), juce::Colour (0xff1c2230), juce::Colour (0xff1b2030), juce::Colour (0xffe4e6ef), juce::Colour (0xff9aa3b8), juce::Colour (0xff0c1020), juce::Colour (0xffffc36b), juce::Colour (0xff7aa2ff), juce::Colour (0xff3f5c99), juce::Colour (0xff1a1f2b), juce::Colour (0xff2a3244), juce::Colour (0xffe4e6ef), juce::Colour (0xff8d97ad), juce::Colour (0xff232a3a), juce::Colour (0xff45516e), juce::Colour (0xff1b2030), juce::Colour (0xffe4e6ef),
+              { juce::Colour(), juce::Colour(), juce::Colour(), juce::Colour() }, false, 0.06f },
+            { "Phosphore", juce::Colour (0xff050805), juce::Colour (0xff0b120c), juce::Colour (0xff101b13), juce::Colour (0xff0b120c), juce::Colour (0xffb9ffcb), juce::Colour (0xff6fae80), juce::Colour (0xff020502), juce::Colour (0xffffb000), juce::Colour (0xff43ff7a), juce::Colour (0xff2c8a48), juce::Colour (0xff0f1a12), juce::Colour (0xff1c3121), juce::Colour (0xffc4f7d1), juce::Colour (0xff6fae80), juce::Colour (0xff101b13), juce::Colour (0xff2c5a38), juce::Colour (0xff0b120c), juce::Colour (0xffb9ffcb),
+              { juce::Colour(), juce::Colour(), juce::Colour(), juce::Colour() }, false, 0.06f },
+            { "Bel Air", juce::Colour (0xfff3ede2), juce::Colour (0xffe8dfcf), juce::Colour (0xffddd2bb), juce::Colour (0xff2a2522), juce::Colour (0xfff3ede2), juce::Colour (0xffc9bfae), juce::Colour (0xff2a2522), juce::Colour (0xffffd9e6), juce::Colour (0xffe0457b), juce::Colour (0xffb8365f), juce::Colour (0xffddd2bb), juce::Colour (0xffc9bb9f), juce::Colour (0xff1f1b18), juce::Colour (0xff5a5148), juce::Colour (0xff2a2522), juce::Colour (0xff6b6258), juce::Colour (0xffe2d9c6), juce::Colour (0xff1f1b18),
+              { juce::Colour(), juce::Colour(), juce::Colour(), juce::Colour() }, false, 0.06f },
+            { "TR-808", juce::Colour (0xff1a1a1a), juce::Colour (0xff242424), juce::Colour (0xff2f2f2f), juce::Colour (0xff2b2b2b), juce::Colour (0xfff1ede4), juce::Colour (0xffbdb6a8), juce::Colour (0xff1c0705), juce::Colour (0xffff4d2e), juce::Colour (0xfff07d1a), juce::Colour (0xffa85a17), juce::Colour (0xff2c2c2c), juce::Colour (0xff3e3e3e), juce::Colour (0xfff1ede4), juce::Colour (0xffaaa59b), juce::Colour (0xffe9e2cf), juce::Colour (0xffbdb5a0), juce::Colour (0xff2b2b2b), juce::Colour (0xfff1ede4),
+              { juce::Colour (0xffd62d20), juce::Colour (0xfff07d1a), juce::Colour (0xfff2c12e), juce::Colour (0xffece4cf) }, false, 0.06f },
+            { "Linn", juce::Colour (0xff16130f), juce::Colour (0xff1e1a17), juce::Colour (0xff27221d), juce::Colour (0xff1e1a17), juce::Colour (0xffefe6d6), juce::Colour (0xffb8a888), juce::Colour (0xff140a04), juce::Colour (0xffff8a3d), juce::Colour (0xffe8b04a), juce::Colour (0xff9c7530), juce::Colour (0xff27221d), juce::Colour (0xff3a322a), juce::Colour (0xffefe6d6), juce::Colour (0xffa8997f), juce::Colour (0xff8a6a45), juce::Colour (0xffb08d5e), juce::Colour (0xff1e1a17), juce::Colour (0xffefe6d6),
+              { juce::Colour(), juce::Colour(), juce::Colour(), juce::Colour() }, true, 0.06f },
         };
-        return t[juce::jlimit (0, 3, i)];
+        return t[juce::jlimit (0, numThemes - 1, i)];
     }
 }

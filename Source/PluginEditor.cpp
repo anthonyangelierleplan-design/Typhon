@@ -10,12 +10,12 @@
 using namespace tui;
 
 static constexpr int baseW = 1280, baseH = 800;
-static constexpr int headerH = 76, bottomH = 168;
+static constexpr int headerH = 76, bottomH = 172;
 
 // ============================================================================
 //  Bouton « glisser le pattern dans Ableton »
 // ============================================================================
-class DragMidiButton : public juce::Component
+class DragMidiButton : public juce::Component, public juce::SettableTooltipClient
 {
 public:
     DragMidiButton (Ctx& c) : ctx (c) {}
@@ -82,14 +82,39 @@ private:
     bool latched = false;
 };
 
+// Languette du panneau de piste rangé (texte vertical, clic = déplier)
+class PanelTab : public juce::Component
+{
+public:
+    PanelTab (Ctx& c) : ctx (c) { setMouseCursor (juce::MouseCursor::PointingHandCursor); }
+    std::function<void()> onClick;
+    juce::String text;
+    void paint (juce::Graphics& g) override
+    {
+        const auto& t = ctx.th();
+        auto r = getLocalBounds().toFloat();
+        g.setColour (t.panel); g.fillRoundedRectangle (r, 8.0f);
+        paintBevel (g, r, 8.0f);
+        g.setColour (t.sub);
+        juce::Graphics::ScopedSaveState ss (g);
+        g.addTransform (juce::AffineTransform::rotation (-juce::MathConstants<float>::halfPi, r.getCentreX(), r.getCentreY()));
+        auto f = font (12.0f, true); f.setExtraKerningFactor (0.12f);
+        g.setFont (f);
+        g.drawText (text, juce::Rectangle<float> (r.getHeight(), r.getWidth()).withCentre (r.getCentre()), juce::Justification::centred);
+    }
+    void mouseUp (const juce::MouseEvent&) override { if (onClick) onClick(); }
+private:
+    Ctx& ctx;
+};
+
 // ============================================================================
 struct TyphonEditor::Ui : public juce::Component, private juce::Timer
 {
     Ui (TyphonProcessor& p)
         : ctx { p }, look (ctx), grid (ctx), lane (ctx), capture (ctx), settingsPage (ctx), mixPage (ctx), libPage (ctx), editor (ctx),
-          tabSeq (ctx, juce::String::fromUTF8 ("S\xc3\x89QUENCEUR")), tabCap (ctx, "CAPTURE"), tabMix (ctx, "MIX"), tabLib (ctx, "SONS"), fillSet (ctx, juce::String::fromUTF8 ("R\xc3\x89GLAGES FILL")),
-          chokeAllBtn (ctx, "CHOKE GLOBAL"), undoBtn (ctx, juce::String::fromUTF8 ("\xe2\x86\xb6")), redoBtn (ctx, juce::String::fromUTF8 ("\xe2\x86\xb7")), settingsBtn (ctx, juce::String::fromUTF8 ("PARAM\xc3\x88TRES")),
-          dragBtn (ctx), fillBtn (ctx)
+          tabSeq (ctx, juce::String::fromUTF8 ("S\xc3\x89QUENCE")), tabCap (ctx, "CAPTURE"), tabMix (ctx, "MIX"), tabLib (ctx, "SONS"), fillSet (ctx, juce::String::fromUTF8 ("R\xc3\x89GLAGES FILL")),
+          chokeAllBtn (ctx, "CHOKE GLOBAL"), undoBtn (ctx, juce::String::fromUTF8 ("\xe2\x86\xb6")), redoBtn (ctx, juce::String::fromUTF8 ("\xe2\x86\xb7")), settingsBtn (ctx, juce::String::fromUTF8 ("\xe2\x9a\x99")),
+          dragBtn (ctx), fillBtn (ctx), spAuth (ctx, "AUTHENTIQUE"), spClean (ctx, "PROPRE"), panelBtn (ctx, juce::String::fromUTF8 ("RANGER \xe2\x96\xb8")), panelTab (ctx)
     {
         setLookAndFeel (&look);
         addAndMakeVisible (grid);
@@ -132,39 +157,44 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
         tabSeq.onClick = [this] { setPage (0); };
         tabCap.onClick = [this] { setPage (1); };
         settingsBtn.onClick = [this] { setPage (page == 2 ? 0 : 2); };
+        settingsBtn.setTooltip (juce::String::fromUTF8 ("Param\xc3\xa8tres"));
+        settingsBtn.textSize = 20.0f;
+        for (auto* b : { &spAuth, &spClean }) { addAndMakeVisible (*b); b->textSize = 9.5f; }
+        spAuth.isOn = [this] { return ctx.proc.settings.spMode.load() == 0; };
+        spClean.isOn = [this] { return ctx.proc.settings.spMode.load() == 1; };
+        spAuth.onClick = [this] { ctx.proc.settings.spMode.store (0); ctx.proc.settings.save(); repaint(); };
+        spClean.onClick = [this] { ctx.proc.settings.spMode.store (1); ctx.proc.settings.save(); repaint(); };
+        spAuth.setTooltip (juce::String::fromUTF8 ("Comme la machine : maintien sans filtre anti-repliement"));
+        spClean.setTooltip (juce::String::fromUTF8 ("M\xc3\xaame grain, aigus moins agressifs"));
+        addAndMakeVisible (panelBtn); panelBtn.textSize = 11.0f;
+        panelBtn.onClick = [this] { setPanelOpen (false); };
+        addChildComponent (panelTab);
+        panelTab.onClick = [this] { setPanelOpen (true); };
+        dragBtn.setTooltip (juce::String::fromUTF8 ("Clips MIDI : Kick C1, Snare D1, Ghost D#1, Rim C#1, Hat F#1 / A#1, Crash C#2, Perc E1 \xc2\xb7 C0 coupe tout"));
         chokeAllBtn.setClickingTogglesState (true);
         chokeAllAtt = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (p.apvts, "choke_all", chokeAllBtn);
         settingsPage.onClose = [this] { setPage (0); };
         settingsPage.onChanged = [this] { applySettings(); };
 
-        grid.onSelectLane = [this] (int l) { lane.setLane (l); if (lane.getLockStep() < 0) { grid.lockLane = -1; grid.lockStep = -1; } if (editorOpen) editor.setLane (l); };
+        grid.onSelectLane = [this] (int l) { lane.setLane (l); panelTab.text = juce::String::fromUTF8 ("\xe2\x97\x82  ") + typhon::laneName (l).toUpperCase() + juce::String::fromUTF8 ("  \xc2\xb7  PISTE"); panelTab.repaint(); if (lane.getLockStep() < 0) { grid.lockLane = -1; grid.lockStep = -1; } if (editorOpen) editor.setLane (l); };
         grid.selected = 1;
 
-        for (int i = 0; i < typhon::numLanes; ++i)
-        {
-            auto* s = faders.add (new juce::Slider());
-            s->setSliderStyle (juce::Slider::LinearVertical);
-            s->setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
-            faderAtts.add (new juce::AudioProcessorValueTreeState::SliderAttachment (p.apvts, typhon::pid (i, "vol"), *s));
-            s->setDoubleClickReturnValue (true, 0.0);
-            addAndMakeVisible (s);
-        }
         struct K { const char* label; const char* id; std::function<juce::String (float)> fmt; };
         const K ks[] = {
-            { "Swing", "swing", [] (float v) { return juce::String (juce::roundToInt (v * 100.0f)) + " %"; } },
             { "Grain SP", "sp_amt", fmtPct },
             { "Bits", "sp_bits", [] (float v) { return juce::String (juce::roundToInt (v)) + " bits"; } },
-            { juce::CharPointer_UTF8 ("Fr\xc3\xa9quence") .getAddress(), "sp_rate", [] (float v) { return juce::String (v / 1000.0f, 1) + " kHz"; } },
-            { "Filtre SP", "sp_filt", [] (float v) { return v < 0.005f ? juce::String ("Off") : fmtPct (v); } },
+            { "Fr\xc3\xa9quence", "sp_rate", [] (float v) { return juce::String (v / 1000.0f, 2) + " kHz"; } },
+            { "Filtre SP", "sp_filt", [] (float v) { return v < 0.005f ? juce::String ("OUVERT") : fmtPct (v); } },
+            { "Swing", "swing", [] (float v) { return juce::String (juce::roundToInt (v * 100.0f)) + " %"; } },
             { "Master", "master", fmtDb },
-            { juce::CharPointer_UTF8 ("Intensit\xc3\xa9").getAddress(), "fill_int", fmtPct }
+            { "Intensit\xc3\xa9", "fill_int", fmtPct }
         };
         for (auto& k : ks)
         {
             auto* kn = masterKnobs.add (new Knob (ctx, juce::String::fromUTF8 (k.label)));
             kn->attach (k.id);
             kn->formatter = k.fmt;
-            kn->onBottom = true;
+            kn->setHardware();
             addAndMakeVisible (kn);
         }
         fillAuto.addItemList ({ "Fill : jamais", "Fill : 4 mes.", "Fill : 8 mes." }, 1);
@@ -230,8 +260,12 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
         const bool seq = pg == 0;
         grid.setVisible (seq && ! editorOpen); lane.setVisible (seq && ! editorOpen);
         editor.setVisible (seq && editorOpen);
-        for (auto* f : faders) f->setVisible (seq);
         for (auto* k : masterKnobs) k->setVisible (seq);
+        spAuth.setVisible (seq); spClean.setVisible (seq);
+        const bool open = ctx.proc.settings.panelOpen.load() == 1;
+        lane.setVisible (seq && ! editorOpen && open);
+        panelBtn.setVisible (seq && ! editorOpen && open);
+        panelTab.setVisible (seq && ! editorOpen && ! open);
         fillAuto.setVisible (seq); dragBtn.setVisible (seq); fillBtn.setVisible (seq); fillSet.setVisible (seq);
         mixPage.setVisible (pg == 3);
         libPage.setVisible (pg == 4);
@@ -243,8 +277,16 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
         repaint();
     }
 
+    void setPanelOpen (bool open)
+    {
+        ctx.proc.settings.panelOpen.store (open ? 1 : 0);
+        ctx.proc.settings.save();
+        setPage (page);
+    }
+
     void applySettings()
     {
+        bgKey = -1;
         sendLookAndFeelChange();
         const int sc = ctx.proc.settings.uiScale.load();
         if (sc != lastScale && onScaleChanged) { lastScale = sc; onScaleChanged(); }
@@ -263,86 +305,142 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
         if (page == 0) { if (editorOpen) editor.tick(); else { grid.tick(); lane.tick(); } fillBtn.repaint(); }
         else if (page == 1) capture.tick();
         else if (page == 3) mixPage.tick();
-        repaint (0, 0, baseW, headerH);
-        if (page == 0) repaint (0, baseH - bottomH, baseW, bottomH);
+        repaint (lcdArea);
     }
+
+    // Fond (façades, matières, sérigraphie) dessiné une fois dans une image, à la résolution de l'écran
+    juce::Image bgCache;
+    int bgKey = -1;
+    float bgScale = 0.0f;
 
     void paint (juce::Graphics& g) override
     {
         diag::ui ("dessin de la fenetre");
-        const auto& t = ctx.th();
-        g.fillAll (t.bg);
-        // en-tête
-        auto head = juce::Rectangle<int> (0, 0, baseW, headerH);
-        g.setColour (t.head); g.fillRect (head);
-        g.setColour (t.acc); g.fillRect (head.removeFromBottom (4));
-        g.setColour (t.headTx); g.setFont (font (34.0f, true));
-        g.drawText ("TYPHON", 24, 8, 220, 40, juce::Justification::centredLeft);
-        g.setColour (t.headSub); g.setFont (font (11.0f, true));
-        g.drawText (juce::String::fromUTF8 ("FOUDRE AUDIO \xc2\xb7 DRUM MACHINE"), 24, 46, 240, 16, juce::Justification::centredLeft);
+        const float sc = std::max (1.0f, g.getInternalContext().getPhysicalPixelScaleFactor());
+        const int key = ctx.proc.settings.theme.load() * 10 + (page == 0 ? 1 : 0);
+        if (bgCache.isNull() || key != bgKey || std::abs (sc - bgScale) > 0.01f)
+        {
+            bgCache = juce::Image (juce::Image::RGB, juce::roundToInt (baseW * sc), juce::roundToInt (baseH * sc), true);
+            juce::Graphics cg (bgCache);
+            cg.addTransform (juce::AffineTransform::scale (sc));
+            paintStatic (cg);
+            bgKey = key; bgScale = sc;
+        }
+        g.drawImageTransformed (bgCache, juce::AffineTransform::scale (1.0f / sc));
+        paintLcd (g);
+    }
 
-        // écran
-        auto lcd = lcdArea.toFloat();
-        g.setColour (t.lcdBg); g.fillRoundedRectangle (lcd, 6.0f);
-        g.setColour (t.lcdTx); g.setFont (mono (14.0f));
-        auto lr = lcdArea.reduced (14, 0);
+    void paintLcd (juce::Graphics& g)
+    {
+        const auto& t = ctx.th();
+        g.setColour (t.lcdTx); g.setFont (mono (16.0f));
+        auto lr = lcdArea.reduced (12, 0);
         if (page == 1)
         {
             auto& eng = ctx.proc.capture();
             g.drawText (eng.busy() ? juce::String::fromUTF8 ("CAPTURE \xc2\xb7 ") + juce::String (juce::roundToInt (eng.progress() * 100.0f)) + " %"
                                    : juce::String (juce::String::fromUTF8 ("CAPTURE \xc2\xb7 PR\xc3\x8aT")), lr, juce::Justification::centredLeft);
+            return;
         }
-        else
+        const float sw = ctx.proc.apvts.getRawParameterValue ("swing")->load();
+        juce::String right = juce::String (ctx.proc.hostBpm(), 1) + "  SW" + juce::String (juce::roundToInt (sw * 100.0f)) + "  ";
+        right += ctx.proc.hostPlaying() ? juce::String::fromUTF8 ("\xe2\x96\xb6 ") + juce::String (ctx.proc.playingStep() + 1).paddedLeft ('0', 2)
+                                        : juce::String::fromUTF8 ("\xe2\x96\xa0 STOP");
+        if (ctx.proc.fillActive()) right = "FILL  " + right;
+        const int rw = juce::roundToInt (juce::GlyphArrangement::getStringWidth (g.getCurrentFont(), right)) + 6;
+        g.drawText (right, lr.removeFromRight (rw), juce::Justification::centredRight);
+        const juce::String leftText = page == 3 ? "MASTER " + juce::String (juce::Decibels::gainToDecibels (ctx.proc.masterLevel(), -60.0f), 1) + " dB"
+                                                : ctx.proc.currentKitName().toUpperCase();
+        g.drawFittedText (leftText, lr.withTrimmedRight (8), juce::Justification::centredLeft, 1, 0.7f);
+    }
+
+    void paintStatic (juce::Graphics& g)
+    {
+        const auto& t = ctx.th();
+        g.fillAll (t.bg);
+        paintGrain (g, getLocalBounds().toFloat(), t.grain * 0.5f);
+
+        // --- en-tête : façade sérigraphiée ---
+        auto head = juce::Rectangle<float> (0, 0, (float) baseW, (float) headerH);
+        g.setColour (t.head); g.fillRect (head);
+        paintGrain (g, head, t.grain);
+        g.setColour (juce::Colours::white.withAlpha (0.25f)); g.drawLine (0, 1.0f, (float) baseW, 1.0f, 1.0f);
+        g.setColour (t.acc); g.fillRect (head.removeFromBottom (3.0f));
+        paintEmblem (g, { 22.0f, 14.0f, 46.0f, 46.0f }, t.headTx, t.acc);
         {
-            const float sw = ctx.proc.apvts.getRawParameterValue ("swing")->load();
-            juce::String right = juce::String ("SW ") + juce::String (juce::roundToInt (sw * 100.0f)) + "%  ";
-            right += ctx.proc.hostPlaying() ? juce::String::fromUTF8 ("\xe2\x96\xb6 PAS ") + juce::String (ctx.proc.playingStep() + 1)
-                                            : juce::String::fromUTF8 ("\xe2\x96\xa0 STOP");
-            if (ctx.proc.fillActive()) right = "FILL   " + right;
-            g.setFont (mono (13.0f));
-            const int rw = juce::roundToInt (juce::GlyphArrangement::getStringWidth (g.getCurrentFont(), right)) + 6;
-            g.drawText (right, lr.removeFromRight (rw), juce::Justification::centredRight);
-            const juce::String leftText = page == 3 ? "MASTER " + juce::String (juce::Decibels::gainToDecibels (ctx.proc.masterLevel(), -60.0f), 1) + " dB"
-                                                    : ctx.proc.currentKitName().toUpperCase();
-            g.drawFittedText (leftText, lr.withTrimmedRight (8), juce::Justification::centredLeft, 1, 0.8f);
+            juce::Graphics::ScopedSaveState ss (g);
+            g.addTransform (juce::AffineTransform::shear (-0.14f, 0.0f).translated (0.14f * 40.0f, 0.0f));
+            auto lf = logoFont (27.0f); lf.setExtraKerningFactor (0.16f);
+            g.setFont (lf); g.setColour (t.headTx);
+            g.drawText ("TYPHON", 80, 12, 220, 34, juce::Justification::centredLeft);
+        }
+        auto sf = font (11.0f, true); sf.setExtraKerningFactor (0.22f);
+        g.setFont (sf); g.setColour (t.headSub);
+        g.drawText (juce::String::fromUTF8 ("TY-12 \xc2\xb7 FOUDRE AUDIO"), 82, 46, 220, 14, juce::Justification::centredLeft);
+        // logement des onglets
+        auto tabs = tabSeq.getBounds().getUnion (tabLib.getBounds()).toFloat().expanded (4.0f);
+        paintInset (g, tabs, 9.0f, t.headTx.withAlpha (t.head.getPerceivedBrightness() > 0.5f ? 0.9f : 0.25f));
+
+        // écran
+        auto lcd = lcdArea.toFloat();
+        paintInset (g, lcd, 6.0f, t.lcdBg);
+        g.setColour (t.lcdTx.withAlpha (0.05f));
+        for (float yy = lcd.getY() + 2.0f; yy < lcd.getBottom(); yy += 3.0f) g.drawHorizontalLine ((int) yy, lcd.getX() + 2.0f, lcd.getRight() - 2.0f);
+        if (t.wood)
+        {
+            paintWood (g, { 0.0f, 0.0f, 10.0f, (float) baseH });
+            paintWood (g, { (float) baseW - 10.0f, 0.0f, 10.0f, (float) baseH });
         }
 
         if (page == 0)
         {
-            // barre du bas
-            auto bot = juce::Rectangle<int> (0, baseH - bottomH, baseW, bottomH);
+            // --- façade SP GRAIN ---
+            auto bot = juce::Rectangle<float> (0, (float) (baseH - bottomH), (float) baseW, (float) bottomH);
             g.setColour (t.bottom); g.fillRect (bot);
-            g.setColour (t.bottomTx); g.setFont (font (11.0f, true));
-            for (int i = 0; i < typhon::numLanes; ++i)
+            paintGrain (g, bot, t.grain * 1.2f);
+            g.setColour (t.acc); g.fillRect (bot.withHeight (3.0f));
+            g.setColour (juce::Colours::white.withAlpha (0.2f)); g.drawLine (0, bot.getY() + 3.5f, (float) baseW, bot.getY() + 3.5f, 1.0f);
+            const float inset = t.wood ? 22.0f : 12.0f;
+            for (auto p : { juce::Point<float> (inset, bot.getY() + 16.0f), juce::Point<float> ((float) baseW - inset, bot.getY() + 16.0f),
+                            juce::Point<float> (inset, bot.getBottom() - 12.0f), juce::Point<float> ((float) baseW - inset, bot.getBottom() - 12.0f) })
+                paintScrew (g, p);
+            if (t.wood) { paintWood (g, { 0.0f, bot.getY(), 10.0f, bot.getHeight() }); paintWood (g, { (float) baseW - 10.0f, bot.getY(), 10.0f, bot.getHeight() }); }
+
+            // plaque SP GRAIN
+            auto badge = badgeArea.toFloat();
+            g.setColour (t.bottomTx); g.drawRoundedRectangle (badge, 8.0f, 2.0f);
             {
-                auto fr = faders[i]->getBounds();
-                g.drawFittedText (typhon::laneShortName (i), fr.getX() - 6, fr.getBottom() + 4, fr.getWidth() + 12, 14, juce::Justification::centred, 1);
-                const float m = ctx.proc.laneMeter (i);
-                const float h = juce::jlimit (0.0f, 1.0f, std::sqrt (m)) * (float) fr.getHeight();
-                g.setColour (t.acc.withAlpha (0.8f));
-                g.fillRect ((float) fr.getRight() - 3.0f, (float) fr.getBottom() - h, 3.0f, h);
-                g.setColour (t.bottomTx);
+                auto lf = logoFont (17.0f); lf.setExtraKerningFactor (0.14f);
+                g.setFont (lf);
+                g.drawText ("SP GRAIN", badge.reduced (14.0f, 0.0f).withTrimmedTop (12.0f).withHeight (24.0f), juce::Justification::centredLeft);
             }
-            g.setColour (t.bottomTx.withAlpha (0.3f));
-            g.fillRect (sep1); g.fillRect (sep2);
-            g.setColour (t.bottomTx.withAlpha (0.8f)); g.setFont (font (11.0f));
-            g.drawFittedText (juce::String::fromUTF8 ("Clips MIDI : Kick C1, Snare D1, Ghost D#1, Rim C#1, Hat F#1 / A#1, Crash C#2, Perc E1 \xc2\xb7 C0 coupe tout"),
-                              midiHint, juce::Justification::centredLeft, 2);
+            auto bf = font (9.5f, true); bf.setExtraKerningFactor (0.08f);
+            g.setFont (bf); g.setColour (t.bottomTx.withAlpha (0.7f));
+            g.drawFittedText (juce::String::fromUTF8 ("12-BIT \xc2\xb7 26.04 kHz \xc2\xb7 SANS FILTRE ANTI-REPLIEMENT"),
+                              badge.reduced (14.0f, 0.0f).withTrimmedTop (40.0f).withHeight (26.0f).toNearestInt(), juce::Justification::topLeft, 2);
+            // filets sérigraphiés entre les groupes
+            g.setColour (t.bottomTx.withAlpha (0.35f));
+            for (auto& sp : { sep1, sep2, sep3 }) g.fillRect (sp);
+            auto gf = font (10.0f, true); gf.setExtraKerningFactor (0.2f);
+            g.setFont (gf); g.setColour (t.bottomTx.withAlpha (0.6f));
+            g.drawText (juce::String::fromUTF8 ("GRAIN 12 BITS"), grpLabel1, juce::Justification::centred);
+            g.drawText (juce::String::fromUTF8 ("GROOVE \xc2\xb7 SORTIE"), grpLabel2, juce::Justification::centred);
+            g.drawText ("FILL", grpLabel3, juce::Justification::centred);
         }
     }
 
     void resized() override
     {
         // en-tête
-        tabSeq.setBounds (262, 16, 132, 40);
-        tabCap.setBounds (400, 16, 100, 40);
-        tabMix.setBounds (506, 16, 64, 40);
-        tabLib.setBounds (576, 16, 72, 40);
-        settingsBtn.setBounds (baseW - 24 - 118, 18, 118, 36);
-        chokeAllBtn.setBounds (settingsBtn.getX() - 8 - 122, 18, 122, 36);
-        redoBtn.setBounds (chokeAllBtn.getX() - 10 - 44, 18, 44, 36);
-        undoBtn.setBounds (redoBtn.getX() - 6 - 44, 18, 44, 36);
-        lcdArea = { 656, 14, undoBtn.getX() - 10 - 656, 44 };
+        tabSeq.setBounds (300, 18, 116, 38);
+        tabCap.setBounds (420, 18, 96, 38);
+        tabMix.setBounds (520, 18, 62, 38);
+        tabLib.setBounds (586, 18, 70, 38);
+        settingsBtn.setBounds (baseW - 24 - 44, 18, 44, 38);
+        chokeAllBtn.setBounds (settingsBtn.getX() - 8 - 122, 18, 122, 38);
+        redoBtn.setBounds (chokeAllBtn.getX() - 10 - 42, 18, 42, 38);
+        undoBtn.setBounds (redoBtn.getX() - 6 - 42, 18, 42, 38);
+        lcdArea = { 676, 16, undoBtn.getX() - 12 - 676, 42 };
 
         auto body = juce::Rectangle<int> (0, headerH, baseW, baseH - headerH);
         capture.setBounds (body);
@@ -350,35 +448,52 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
         mixPage.setBounds (body);
         libPage.setBounds (body);
 
-        auto main = juce::Rectangle<int> (24, headerH + 18, baseW - 48, baseH - headerH - bottomH - 30);
+        auto main = juce::Rectangle<int> (24, headerH + 16, baseW - 48, baseH - headerH - bottomH - 28);
         editor.setBounds (main);
-        lane.setBounds (main.removeFromRight (340));
-        main.removeFromRight (20);
+        if (ctx.proc.settings.panelOpen.load() == 1)
+        {
+            auto lr = main.removeFromRight (340);
+            lane.setBounds (lr);
+            main.removeFromRight (18);
+            panelBtn.setBounds (main.getRight() - 108, main.getY(), 108, 30);
+        }
+        else
+        {
+            panelTab.setBounds (main.removeFromRight (34));
+            panelTab.text = juce::String::fromUTF8 ("\xe2\x97\x82  ") + typhon::laneName (lane.lane).toUpperCase() + juce::String::fromUTF8 ("  \xc2\xb7  PISTE");
+            main.removeFromRight (14);
+        }
         grid.setBounds (main);
 
-        // barre du bas
-        auto bot = juce::Rectangle<int> (24, baseH - bottomH + 16, baseW - 48, bottomH - 32);
-        for (int i = 0; i < typhon::numLanes; ++i)
-        {
-            auto c = bot.removeFromLeft (50);
-            faders[i]->setBounds (c.withTrimmedBottom (20).withSizeKeepingCentre (40, c.getHeight() - 22));
-        }
+        // façade du bas
+        auto bot = juce::Rectangle<int> (34, baseH - bottomH + 14, baseW - 68, bottomH - 24);
+        badgeArea = bot.removeFromLeft (196).withSizeKeepingCentre (196, 112).translated (0, -4);
+        spAuth.setBounds (badgeArea.getX() + 14, badgeArea.getBottom() - 32, 92, 20);
+        spClean.setBounds (spAuth.getRight() + 6, spAuth.getY(), 64, 20);
         bot.removeFromLeft (14);
-        sep1 = bot.removeFromLeft (2).toFloat(); bot.removeFromLeft (14);
-        for (int i = 0; i < 6; ++i) masterKnobs[i]->setBounds (bot.removeFromLeft (66).withSizeKeepingCentre (66, 96));
-        bot.removeFromLeft (10);
-        sep2 = bot.removeFromLeft (2).toFloat(); bot.removeFromLeft (14);
-        auto fillCol = bot.removeFromLeft (96);
-        fillBtn.setBounds (fillCol.removeFromTop (54));
+        auto knobRow = [&] (int from, int to, int w)
+        {
+            auto area = bot.removeFromLeft ((to - from) * w);
+            for (int i = from; i < to; ++i) masterKnobs[i]->setBounds (area.removeFromLeft (w).withTrimmedTop (16));
+            return area;
+        };
+        auto g1 = bot; knobRow (0, 4, 86); grpLabel1 = g1.withWidth (4 * 86).withHeight (14);
+        bot.removeFromLeft (10); sep1 = bot.removeFromLeft (2).toFloat().withTrimmedTop (10).withTrimmedBottom (10); bot.removeFromLeft (10);
+        auto g2 = bot; knobRow (4, 6, 86); grpLabel2 = g2.withWidth (2 * 86).withHeight (14);
+        bot.removeFromLeft (10); sep2 = bot.removeFromLeft (2).toFloat().withTrimmedTop (10).withTrimmedBottom (10); bot.removeFromLeft (14);
+        auto fillCol = bot.removeFromLeft (100);
+        grpLabel3 = fillCol.withHeight (14).withWidth (100 + 80);
+        fillCol.removeFromTop (16);
+        fillBtn.setBounds (fillCol.removeFromTop (56));
+        fillCol.removeFromTop (6);
+        fillAuto.setBounds (fillCol.removeFromTop (26));
         fillCol.removeFromTop (5);
-        fillAuto.setBounds (fillCol.removeFromTop (28));
-        fillCol.removeFromTop (5);
-        fillSet.setBounds (fillCol.removeFromTop (26));
-        masterKnobs[6]->setBounds (bot.removeFromLeft (70).withSizeKeepingCentre (70, 96));
-        bot.removeFromLeft (10);
-        dragBtn.setBounds (bot.removeFromTop (54));
-        bot.removeFromTop (8);
-        midiHint = bot;
+        fillSet.setBounds (fillCol.removeFromTop (24));
+        masterKnobs[6]->setBounds (bot.removeFromLeft (80).withTrimmedTop (16));
+        bot.removeFromLeft (8);
+        sep3 = bot.removeFromLeft (2).toFloat().withTrimmedTop (10).withTrimmedBottom (10);
+        bot.removeFromLeft (14);
+        dragBtn.setBounds (bot.withSizeKeepingCentre (bot.getWidth(), 70));
     }
 
     Ctx ctx;
@@ -397,14 +512,14 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
     bool editorOpen = false;
     DragMidiButton dragBtn;
     FillButton fillBtn;
-    juce::OwnedArray<juce::Slider> faders;
-    juce::OwnedArray<juce::AudioProcessorValueTreeState::SliderAttachment> faderAtts;
+    Pill spAuth, spClean, panelBtn;
+    PanelTab panelTab;
     juce::OwnedArray<Knob> masterKnobs;
     juce::ComboBox fillAuto;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> fillAutoAtt;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> chokeAllAtt;
-    juce::Rectangle<int> lcdArea, midiHint;
-    juce::Rectangle<float> sep1, sep2;
+    juce::Rectangle<int> lcdArea, badgeArea, grpLabel1, grpLabel2, grpLabel3;
+    juce::Rectangle<float> sep1, sep2, sep3;
     int page = 0;
     int lastScale = -1;
 };

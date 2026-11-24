@@ -25,7 +25,8 @@ void TyphonSettings::load()
     get ("multiOut", multiOut, 0, 1);
     get ("midiMap", midiMap, 0, 2);
     get ("midiChannel", midiChannel, 0, 16);
-    get ("theme", theme, 0, 3);
+    get ("theme", theme, 0, 5);
+    get ("panelOpen", panelOpen, 0, 1);
     get ("uiScale", uiScale, 0, 3);
     get ("snapZero", snapZero, 0, 1);
     get ("captureRate", captureRate, 0, 1);
@@ -43,6 +44,7 @@ void TyphonSettings::save() const
     x.setAttribute ("midiMap", midiMap.load());
     x.setAttribute ("midiChannel", midiChannel.load());
     x.setAttribute ("theme", theme.load());
+    x.setAttribute ("panelOpen", panelOpen.load());
     x.setAttribute ("uiScale", uiScale.load());
     x.setAttribute ("snapZero", snapZero.load());
     x.setAttribute ("captureRate", captureRate.load());

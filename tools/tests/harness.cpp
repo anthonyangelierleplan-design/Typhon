@@ -363,8 +363,8 @@ int main (int argc, char** argv)
         juce::File (shotDir).createDirectory();
         TyphonProcessor p;
         p.settings.uiScale.store (1);
-        const char* names[4] = { "atelier", "nuit", "phosphore", "belair" };
-        for (int th = 0; th < 4; ++th)
+        const char* names[6] = { "atelier", "nuit", "phosphore", "belair", "808", "linn" };
+        for (int th = 0; th < 6; ++th)
         {
             p.settings.theme.store (th);
             std::unique_ptr<juce::AudioProcessorEditor> ed (p.createEditor());
@@ -378,6 +378,23 @@ int main (int argc, char** argv)
             {
                 // pages Capture et Paramètres, onglet dynamique
                 auto* ui = ed->getChildComponent (0);
+                {
+                    std::function<juce::Component* (juce::Component*)> findRanger = [&] (juce::Component* c) -> juce::Component*
+                    {
+                        if (auto* b = dynamic_cast<juce::Button*> (c)) if (b->getButtonText().startsWith ("RANGER")) return c;
+                        for (auto* ch : c->getChildren()) if (auto* f = findRanger (ch)) return f;
+                        return nullptr;
+                    };
+                    if (auto* b = dynamic_cast<juce::Button*> (findRanger (ui)))
+                    {
+                        b->triggerClick(); juce::MessageManager::getInstance()->runDispatchLoopUntil (50);
+                        auto im2 = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.0f);
+                        juce::FileOutputStream o2 (juce::File (shotDir).getChildFile ("seq_range.png")); o2.setPosition (0); o2.truncate();
+                        png.writeImageToStream (im2, o2);
+                        p.settings.panelOpen.store (1);
+                        if (auto* tab = ui->getChildComponent (0)) juce::ignoreUnused (tab);
+                    }
+                }
                 std::function<juce::Component* (juce::Component*, const juce::String&)> findBtn = [&] (juce::Component* c, const juce::String& text) -> juce::Component*
                 {
                     if (auto* b = dynamic_cast<juce::Button*> (c)) if (b->getButtonText() == text) return c;

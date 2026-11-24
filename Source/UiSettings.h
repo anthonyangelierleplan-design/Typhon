@@ -36,7 +36,7 @@ namespace tui
                      { { "Piloter l'APC64", { "Off", "On" }, &S.apcOn } });
             cards.back().status = [this] { return ctx.proc.apcStatus(); };
             addCard ("INTERFACE", {},
-                     { { "Th\xc3\xa8me", { "Atelier", "Nuit", "Phosphore", "Bel Air" }, &S.theme },
+                     { { "Th\xc3\xa8me", { "Atelier", "Nuit", "Phosph.", "Bel Air", "808", "Linn" }, &S.theme },
                        { "Taille de la fen\xc3\xaatre", { "75 %", "100 %", "125 %", "150 %" }, &S.uiScale },
                        { "Cran magn\xc3\xa9tique au z\xc3\xa9ro", { "Off", "On" }, &S.snapZero } });
             startTimerHz (2);

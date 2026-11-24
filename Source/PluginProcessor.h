@@ -19,7 +19,8 @@ struct TyphonSettings
     std::atomic<int> multiOut { 1 };       // 0 stéréo, 1 multi-out
     std::atomic<int> midiMap { 0 };        // 0 Typhon, 1 General MIDI, 2 EZdrummer
     std::atomic<int> midiChannel { 0 };    // 0 omni, sinon 1..16
-    std::atomic<int> theme { 0 };          // 0 Atelier, 1 Nuit, 2 Phosphore, 3 Bel Air
+    std::atomic<int> theme { 0 };          // 0 Atelier, 1 Nuit, 2 Phosphore, 3 Bel Air, 4 TR-808, 5 Linn
+    std::atomic<int> panelOpen { 1 };      // panneau de piste ouvert (1) ou rangé (0)
     std::atomic<int> uiScale { 1 };        // 0 75 %, 1 100 %, 2 125 %, 3 150 %
     std::atomic<int> snapZero { 1 };
     std::atomic<int> captureRate { 0 };    // 0 48 kHz / 24 bits, 1 96 kHz / 32 bits flottant

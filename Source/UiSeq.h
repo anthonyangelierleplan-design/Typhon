@@ -178,7 +178,7 @@ namespace tui
                         // continuation d'une liaison : barre qui rejoint le pas de tête
                         const Step hs = pat.get (lane, head);
                         const bool last = head + hs.len - 1 == j;
-                        auto c = stepColour (t, hs).withMultipliedAlpha (0.8f);
+                        auto c = stepColour (t, hs, head).withMultipliedAlpha (0.8f);
                         auto rr = r.withX (r.getX() - 4.0f).withWidth (r.getWidth() + 4.0f);
                         g.setColour (c);
                         if (last) { g.fillRoundedRectangle (rr, 5.0f); g.fillRect (rr.withWidth (6.0f)); }
@@ -192,7 +192,7 @@ namespace tui
                     }
                     else
                     {
-                        const auto c = stepColour (t, s);
+                        const auto c = stepColour (t, s, j);
                         g.setColour (c);
                         if (s.split)
                         {
@@ -282,8 +282,14 @@ namespace tui
                               0, headerH + numLanes * (rowH + rowGap) + 2, getWidth(), 18, juce::Justification::centredLeft, 1);
         }
 
-        static juce::Colour stepColour (const typhon::Theme& t, const typhon::Step& s)
+        static juce::Colour stepColour (const typhon::Theme& t, const typhon::Step& s, int column = 0)
         {
+            if (t.hasGroups())
+            {
+                // façon TR-808 : la couleur du groupe de 4 pas, plus sombre pour les vélocités faibles
+                const auto g = t.groups[(column / 4) % 4];
+                return s.vel >= 120 ? g : g.withMultipliedBrightness (0.55f + 0.4f * (float) s.vel / 119.0f);
+            }
             if (s.vel >= 120) return t.acc;
             const float a = 0.55f + 0.45f * (float) s.vel / 119.0f;
             return t.acc2.withMultipliedAlpha (a);

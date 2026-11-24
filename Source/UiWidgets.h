@@ -5,18 +5,41 @@
 #include <JuceHeader.h>
 #include "PluginProcessor.h"
 #include "Shared.h"
+#include "FontData.h"
 
 namespace tui
 {
     using typhon::Theme;
 
+    // Polices embarquées : Saira Semi Condensed (sérigraphie), Share Tech Mono (écran), Michroma (logo, titres)
+    struct Typefaces
+    {
+        juce::Typeface::Ptr medium, bold, lcd, logo;
+        Typefaces()
+        {
+            medium = juce::Typeface::createSystemTypefaceFor (fontdata::sairaMedium, (size_t) fontdata::sairaMediumSize);
+            bold = juce::Typeface::createSystemTypefaceFor (fontdata::sairaBold, (size_t) fontdata::sairaBoldSize);
+            lcd = juce::Typeface::createSystemTypefaceFor (fontdata::shareTechMono, (size_t) fontdata::shareTechMonoSize);
+            logo = juce::Typeface::createSystemTypefaceFor (fontdata::michroma, (size_t) fontdata::michromaSize);
+        }
+    };
+    inline const Typefaces& faces() { static Typefaces t; return t; }
+    inline juce::Font withFace (juce::Typeface::Ptr tf, float size, juce::Font fallback)
+    {
+        return tf != nullptr ? juce::Font (juce::FontOptions (tf).withHeight (size)) : fallback;
+    }
     inline juce::Font font (float size, bool bold = false)
     {
-        return juce::Font (juce::FontOptions (size, bold ? juce::Font::bold : juce::Font::plain));
+        return withFace (bold ? faces().bold : faces().medium, size * 1.08f, juce::Font (juce::FontOptions (size, bold ? juce::Font::bold : juce::Font::plain)));
     }
     inline juce::Font mono (float size, bool bold = false)
     {
-        return juce::Font (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), size, bold ? juce::Font::bold : juce::Font::plain));
+        juce::ignoreUnused (bold);
+        return withFace (faces().lcd, size * 1.1f, juce::Font (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), size, juce::Font::plain)));
+    }
+    inline juce::Font logoFont (float size)
+    {
+        return withFace (faces().logo, size, font (size, true));
     }
 
     // Couleur des valeurs chiffrées : vert écran sur fond sombre, couleur d'en-tête sur fond clair
@@ -43,6 +66,7 @@ namespace tui
                                float a0, float a1, juce::Slider& s) override
         {
             const auto& t = ctx.th();
+            if (s.getProperties()["hw"]) { drawHardwareKnob (g, x, y, w, h, pos, a0, a1, s); return; }
             auto r = juce::Rectangle<float> ((float) x, (float) y, (float) w, (float) h).reduced (3.0f);
             const float d = std::min (r.getWidth(), r.getHeight());
             r = r.withSizeKeepingCentre (d, d);
@@ -71,6 +95,50 @@ namespace tui
             needle.addRoundedRectangle (-1.5f, -rad + 3.0f, 3.0f, rad * 0.45f, 1.5f);
             g.setColour (t.acc);
             g.fillPath (needle, juce::AffineTransform::rotation (ang).translated (body.getCentreX(), body.getCentreY()));
+        }
+
+        // Potard de façade : graduations sérigraphiées, capuchon bombé, trait d'index
+        void drawHardwareKnob (juce::Graphics& g, int x, int y, int w, int h, float pos, float a0, float a1, juce::Slider& s)
+        {
+            const auto& t = ctx.th();
+            auto r = juce::Rectangle<float> ((float) x, (float) y, (float) w, (float) h);
+            const float d = std::min (r.getWidth(), r.getHeight());
+            r = r.withSizeKeepingCentre (d, d);
+            const auto c = r.getCentre();
+            const float R = d * 0.5f;
+            // graduations
+            g.setColour (t.bottomTx.withAlpha (0.85f));
+            for (int k = 0; k <= 10; ++k)
+            {
+                const float a = a0 + (a1 - a0) * (float) k / 10.0f;
+                const float r0 = R - (k % 5 == 0 ? 7.0f : 5.0f), r1 = R - 1.0f;
+                g.drawLine (c.x + r0 * std::sin (a), c.y - r0 * std::cos (a), c.x + r1 * std::sin (a), c.y - r1 * std::cos (a), k % 5 == 0 ? 2.0f : 1.2f);
+            }
+            // repère du zéro pour les réglages bipolaires
+            if (s.getMinimum() < 0.0 && s.getMaximum() > 0.0)
+            {
+                const float az = a0 + (float) s.valueToProportionOfLength (0.0) * (a1 - a0);
+                g.setColour (t.acc);
+                g.fillEllipse (c.x + (R - 2.0f) * std::sin (az) - 2.0f, c.y - (R - 2.0f) * std::cos (az) - 2.0f, 4.0f, 4.0f);
+            }
+            // ombre portée + capuchon
+            auto cap = r.reduced (d * 0.17f);
+            g.setColour (juce::Colours::black.withAlpha (0.35f));
+            g.fillEllipse (cap.translated (0.0f, 3.0f).expanded (1.0f));
+            const auto base = t.knob;
+            juce::ColourGradient grad (base.brighter (0.55f), cap.getX() + cap.getWidth() * 0.3f, cap.getY() + cap.getHeight() * 0.25f,
+                                       base.darker (0.35f), cap.getRight(), cap.getBottom(), true);
+            g.setGradientFill (grad);
+            g.fillEllipse (cap);
+            g.setColour (t.bottomTx.withAlpha (0.9f));
+            g.drawEllipse (cap, 1.6f);
+            // index
+            const float ang = a0 + pos * (a1 - a0);
+            const float cr = cap.getWidth() * 0.5f;
+            juce::Path needle;
+            needle.addRoundedRectangle (-2.0f, -cr + 3.0f, 4.0f, cr * 0.55f, 2.0f);
+            g.setColour (base.getPerceivedBrightness() > 0.6f ? juce::Colour (0xff1a1a1a) : t.acc);
+            g.fillPath (needle, juce::AffineTransform::rotation (ang).translated (c.x, c.y));
         }
 
         void drawLinearSlider (juce::Graphics& g, int x, int y, int w, int h, float sliderPos, float, float,
@@ -241,6 +309,8 @@ namespace tui
 
         std::function<juce::String (float)> formatter;
         bool onBottom = false;   // posé sur la barre du bas (couleurs adaptées)
+        bool hardware = false;   // potard de façade (sérigraphie, capuchon)
+        void setHardware() { hardware = true; onBottom = true; slider.getProperties().set ("hw", true); label = label.toUpperCase(); repaint(); }
 
         void resized() override
         {
@@ -254,7 +324,9 @@ namespace tui
             const auto& t = ctx.th();
             auto r = getLocalBounds().removeFromBottom (label.isEmpty() ? 16 : 30);
             g.setColour (onBottom ? t.bottomTx : t.tx.withAlpha (0.85f));
-            g.setFont (font (12.0f, onBottom));
+            auto lf = font (hardware ? 12.5f : 12.0f, onBottom);
+            if (hardware) lf.setExtraKerningFactor (0.12f);
+            g.setFont (lf);
             if (label.isNotEmpty()) g.drawText (label, r.removeFromTop (15), juce::Justification::centred);
             g.setColour (onBottom ? t.bottomTx.withAlpha (0.75f) : valueColour (t));
             g.setFont (mono (11.0f));
@@ -281,6 +353,94 @@ namespace tui
         std::function<float()> lockGet;
         std::function<void (float)> lockSet;
     };
+
+    // ------------------------------------------------------------------------
+    //  Matières : grain de peinture, contours de panneau, vis, emblème
+    // ------------------------------------------------------------------------
+    inline const juce::Image& grainImage()
+    {
+        static juce::Image img = []
+        {
+            juce::Image im (juce::Image::ARGB, 160, 160, true);
+            juce::Random rnd (1795);
+            for (int y = 0; y < 160; ++y)
+                for (int x = 0; x < 160; ++x)
+                {
+                    const float v = rnd.nextFloat();
+                    im.setPixelAt (x, y, v < 0.5f ? juce::Colours::black.withAlpha ((0.5f - v) * 0.9f) : juce::Colours::white.withAlpha ((v - 0.5f) * 0.55f));
+                }
+            return im;
+        }();
+        return img;
+    }
+    inline void paintGrain (juce::Graphics& g, juce::Rectangle<float> area, float amount)
+    {
+        if (amount <= 0.0f) return;
+        juce::Graphics::ScopedSaveState ss (g);
+        g.reduceClipRegion (area.toNearestInt());
+        g.setOpacity (amount * 2.2f);
+        g.setTiledImageFill (grainImage(), 0, 0, amount * 2.2f);
+        g.fillRect (area);
+    }
+    // relief d'un panneau : arête claire en haut, ombre en bas, contour sombre
+    inline void paintBevel (juce::Graphics& g, juce::Rectangle<float> r, float radius, bool raised = true)
+    {
+        g.setColour (juce::Colours::black.withAlpha (0.55f));
+        g.drawRoundedRectangle (r.reduced (0.5f), radius, 1.0f);
+        g.setColour (juce::Colours::white.withAlpha (raised ? 0.18f : 0.05f));
+        g.drawLine (r.getX() + radius, r.getY() + 1.5f, r.getRight() - radius, r.getY() + 1.5f, 1.0f);
+        g.setColour (juce::Colours::black.withAlpha (raised ? 0.3f : 0.15f));
+        g.drawLine (r.getX() + radius, r.getBottom() - 1.5f, r.getRight() - radius, r.getBottom() - 1.5f, 1.5f);
+    }
+    // écran encastré
+    inline void paintInset (juce::Graphics& g, juce::Rectangle<float> r, float radius, juce::Colour fill)
+    {
+        g.setColour (fill); g.fillRoundedRectangle (r, radius);
+        juce::ColourGradient sh (juce::Colours::black.withAlpha (0.55f), r.getX(), r.getY(), juce::Colours::transparentBlack, r.getX(), r.getY() + 9.0f, false);
+        g.setGradientFill (sh); g.fillRoundedRectangle (r, radius);
+        g.setColour (juce::Colours::white.withAlpha (0.25f));
+        g.drawLine (r.getX() + radius, r.getBottom() + 0.5f, r.getRight() - radius, r.getBottom() + 0.5f, 1.0f);
+    }
+    inline void paintScrew (juce::Graphics& g, juce::Point<float> c, float rad = 6.5f)
+    {
+        auto r = juce::Rectangle<float> (rad * 2.0f, rad * 2.0f).withCentre (c);
+        juce::ColourGradient gr (juce::Colour (0xfff2f2ef), r.getX() + rad * 0.6f, r.getY() + rad * 0.5f, juce::Colour (0xff6d6e6b), r.getRight(), r.getBottom(), true);
+        g.setGradientFill (gr); g.fillEllipse (r);
+        g.setColour (juce::Colours::black.withAlpha (0.45f)); g.drawEllipse (r, 1.0f);
+        juce::Path slot; slot.addRoundedRectangle (-rad * 0.7f, -0.9f, rad * 1.4f, 1.8f, 0.9f);
+        g.setColour (juce::Colour (0xff4b4c49));
+        g.fillPath (slot, juce::AffineTransform::rotation (0.6f).translated (c.x, c.y));
+    }
+    // L'œil du typhon : trois bras en rotation + l'éclair Foudre Audio
+    inline void paintEmblem (juce::Graphics& g, juce::Rectangle<float> r, juce::Colour body, juce::Colour bolt)
+    {
+        const float s = std::min (r.getWidth(), r.getHeight()) / 100.0f;
+        const auto tr = juce::AffineTransform::scale (s).translated (r.getCentreX() - 50.0f * s, r.getCentreY() - 50.0f * s);
+        juce::Path arm;
+        arm.startNewSubPath (50, 50);
+        arm.cubicTo (49, 26, 66, 9, 92, 14);
+        arm.cubicTo (72, 17, 61, 29, 57, 47);
+        arm.closeSubPath();
+        juce::Path all;
+        for (int k = 0; k < 3; ++k) all.addPath (arm, juce::AffineTransform::rotation (juce::MathConstants<float>::twoPi * k / 3.0f, 50.0f, 50.0f));
+        all.addEllipse (37, 37, 26, 26);
+        g.setColour (body); g.fillPath (all, tr);
+        juce::Path b;
+        b.startNewSubPath (53, 39); b.lineTo (44, 52); b.lineTo (50, 52); b.lineTo (46, 62); b.lineTo (57, 47); b.lineTo (51, 47); b.closeSubPath();
+        g.setColour (bolt); g.fillPath (b, tr);
+    }
+    // flanc en bois (thème Linn)
+    inline void paintWood (juce::Graphics& g, juce::Rectangle<float> r)
+    {
+        juce::ColourGradient gr (juce::Colour (0xff6b4428), r.getX(), r.getY(), juce::Colour (0xff4a2c18), r.getRight(), r.getBottom(), false);
+        g.setGradientFill (gr); g.fillRect (r);
+        juce::Random rnd (42);
+        for (float x = r.getX(); x < r.getRight(); x += 1.0f + rnd.nextFloat() * 2.5f)
+        {
+            g.setColour (juce::Colours::black.withAlpha (0.06f + rnd.nextFloat() * 0.12f));
+            g.drawLine (x, r.getY(), x + rnd.nextFloat() * 2.0f - 1.0f, r.getBottom(), 0.8f);
+        }
+    }
 
     // Formatages lisibles
     inline juce::String fmtDb (float v)   { return v <= -59.9f ? juce::String ("-inf") : juce::String (v, 1) + " dB"; }
