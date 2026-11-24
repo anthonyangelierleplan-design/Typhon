@@ -38,10 +38,11 @@ namespace typhon
     //  bits 17..21 pitch du pas + 12 (-12..+12 demi-tons)
     //  bit  22     coup joué à l'envers
     //  bits 23..24 durée du pas : 0 = suit la piste, 1 = limitée au pas, 2 = libre
+    //  bits 25..28 variante du son : 0 = suit la piste, 1..15 = variante 1..15
     // ------------------------------------------------------------------------
     struct Step
     {
-        int vel = 0, ratchet = 1, len = 1, choke = 0, pitch = 0, dur = 0;
+        int vel = 0, ratchet = 1, len = 1, choke = 0, pitch = 0, dur = 0, var = 0;
         bool split = false, rev = false;
 
         bool on() const { return vel > 0; }
@@ -55,7 +56,8 @@ namespace typhon
                  | ((uint32_t) (choke & 3) << 15)
                  | ((uint32_t) ((std::max (-12, std::min (12, pitch)) + 12) & 31) << 17)
                  | ((uint32_t) (rev ? 1 : 0) << 22)
-                 | ((uint32_t) (dur & 3) << 23);
+                 | ((uint32_t) (dur & 3) << 23)
+                 | ((uint32_t) (std::max (0, std::min (15, var)) & 15) << 25);
         }
         static Step unpack (uint32_t v)
         {
@@ -69,6 +71,7 @@ namespace typhon
             if (s.pitch < -12 || s.pitch > 12) s.pitch = 0;
             s.rev = ((v >> 22) & 1) != 0;
             s.dur = (int) ((v >> 23) & 3); if (s.dur > 2) s.dur = 0;
+            s.var = (int) ((v >> 25) & 15);
             return s;
         }
     };
@@ -121,13 +124,26 @@ namespace typhon
     struct SampleSet
     {
         std::vector<std::vector<std::shared_ptr<Sample>>> layers; // du plus doux au plus fort
+        std::vector<std::vector<std::shared_ptr<Sample>>> variants; // sons de machine : variante -> round robin (si non vide, prime sur layers)
         std::vector<int> layerTopVel;                             // vélocité max de chaque couche
         std::string name;
 
-        bool empty() const { return layers.empty() || layers[0].empty(); }
-
-        const Sample* pick (int vel, uint32_t& rr) const
+        bool empty() const { return (layers.empty() || layers[0].empty()) && variants.empty(); }
+        int numVariants() const { return (int) variants.size(); }
+        // échantillon affiché (forme d'onde)
+        const Sample* display (int variant = 0) const
         {
+            if (! variants.empty()) { const auto& v = variants[(size_t) std::max (0, std::min ((int) variants.size() - 1, variant))]; return v.empty() ? nullptr : v[0].get(); }
+            return (layers.empty() || layers.back().empty()) ? nullptr : layers.back()[0].get();
+        }
+
+        const Sample* pick (int vel, uint32_t& rr, int variant = 0) const
+        {
+            if (! variants.empty())
+            {
+                const auto& v = variants[(size_t) std::max (0, std::min ((int) variants.size() - 1, variant))];
+                return v.empty() ? nullptr : v[(rr++) % v.size()].get();
+            }
             if (empty()) return nullptr;
             size_t li = layers.size() - 1;
             for (size_t i = 0; i < layerTopVel.size() && i < layers.size(); ++i)

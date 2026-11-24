@@ -3,6 +3,7 @@
 #include "Dsp.h"
 #include "Shared.h"
 #include "Diag.h"
+#include "Library.h"
 
 class CaptureEngine;
 
@@ -21,6 +22,10 @@ struct TyphonSettings
     std::atomic<int> uiScale { 1 };        // 0 75 %, 1 100 %, 2 125 %, 3 150 %
     std::atomic<int> snapZero { 1 };
     std::atomic<int> captureRate { 0 };    // 0 48 kHz / 24 bits, 1 96 kHz / 32 bits flottant
+    juce::String libraryPath() const { const juce::ScopedLock sl (lock); return libPath; }
+    void setLibraryPath (const juce::String& p) { { const juce::ScopedLock sl (lock); libPath = p; } save(); }
+    juce::CriticalSection lock;
+    juce::String libPath;
 
     void load();
     void save() const;
@@ -85,6 +90,14 @@ public:
     // Découpe le sample de la piste en coups, les répartit sur les pistes ; renvoie le nombre de tranches
     int sliceLane (int lane, float sensitivity, int maxSlices, bool writePattern);
 
+    // --- bibliothèque de machines ------------------------------------------
+    std::vector<typhon::LibMachine> library;     // dernier scan (fil principal)
+    void rescanLibrary();
+    bool loadLibrarySound (int lane, const typhon::LibSound& s);
+    void loadMachineKit (const typhon::LibMachine& m);
+    void previewSound (const typhon::LibSound& s, int variant);
+    int laneVariants (int lane) const { auto s = laneSet (lane); return s ? std::max (1, s->numVariants()) : 1; }
+
     CaptureEngine& capture() { return *captureEngine; }
     int captureNote (int lane) const { return captureNotes[lane].load(); }
     void setCaptureNote (int lane, int note) { captureNotes[lane].store (juce::jlimit (0, 127, note)); }
@@ -138,6 +151,9 @@ private:
     struct Ev { int offset, lane, vel, choke; int64_t gate; int step, pitch; bool rev; };
     std::array<Ev, 768> evBuf {};
     std::array<int, 128> duckBuf {};
+    std::shared_ptr<typhon::SampleSet> previewSet;   // écoute dans la bibliothèque
+    std::atomic<bool> previewTrigger { false };
+    typhon::Voice previewVoice;
     float duckEnv = 10.0f;   // temps depuis le dernier coup de la source (s)
     int reverbTail = 0, delayTail = 0;
     bool wasPlaying = false;
@@ -153,7 +169,7 @@ private:
         std::atomic<float> *vol, *pan, *pitch, *start, *end, *decay, *choke, *group, *fade, *vsens,
                            *out, *rev, *tatt, *tsus, *dmode, *dthr, *dratio, *datt, *drel, *dmix, *mute, *gate,
                            *fcut, *fres, *ftype, *sendA, *sendB, *duck,
-                           *gran, *gpos, *gsize, *gdens, *gspray, *gpitch, *gprand, *gstereo, *gspeed, *gdur, *grev, *gfreeze, *steplen;
+                           *gran, *gpos, *gsize, *gdens, *gspray, *gpitch, *gprand, *gstereo, *gspeed, *gdur, *grev, *gfreeze, *steplen, *var;
     } lp[typhon::numLanes];
     std::atomic<float> *pSwing, *pSpAmt, *pSpBits, *pSpRate, *pSpFilt, *pMaster, *pFill, *pFillAuto, *pFillInt, *pChokeAll,
                        *pSeqLen, *pFillLen, *pFillGrid, *pFillOthers, *pFillCrash, *pFillLane[typhon::numLanes],

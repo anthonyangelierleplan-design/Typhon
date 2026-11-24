@@ -141,6 +141,18 @@ namespace tui
                     g.setColour (t.lcdBg); g.drawText (juce::String ((int) k + 1), (int) x, (int) r.getY() + 2, 16, 14, juce::Justification::centred);
                 }
             }
+            // variantes du son (machines) : ◀ 2/5 ▶
+            const int nv = setRef ? setRef->numVariants() : 0;
+            varPrev = varNext = {};
+            if (nv > 1 && ! big)
+            {
+                auto vr = juce::Rectangle<int> (6, getHeight() - 20, 120, 16);
+                varPrev = vr.removeFromLeft (18); varNext = vr.removeFromRight (18);
+                g.setColour (t.acc); g.setFont (mono (11.0f, true));
+                g.drawText (juce::String::fromUTF8 ("â"), varPrev, juce::Justification::centred);
+                g.drawText (juce::String::fromUTF8 ("â¶"), varNext, juce::Justification::centred);
+                g.drawText ("VAR " + juce::String ((int) paramValue ("var")) + "/" + juce::String (nv), vr, juce::Justification::centred);
+            }
             g.setColour (t.lcdTx); g.setFont (mono (11.0f));
             juce::String info = ctx.proc.laneSource (lane);
             if (viewLen < 0.999) info += juce::String::fromUTF8 ("  \xc2\xb7 zoom ") + juce::String (1.0 / viewLen, 1) + "x";
@@ -151,6 +163,16 @@ namespace tui
         {
             dragWhat = 0;
             if (e.mods.isPopupMenu()) { menu(); return; }
+            if (! varPrev.isEmpty() && (varPrev.contains (e.getPosition()) || varNext.contains (e.getPosition())))
+            {
+                const int nv = setRef ? setRef->numVariants() : 1;
+                int v = (int) paramValue ("var") + (varNext.contains (e.getPosition()) ? 1 : -1);
+                if (v < 1) v = nv; if (v > nv) v = 1;
+                setParam ("var", (float) v);
+                ctx.proc.audition (lane);
+                repaint();
+                return;
+            }
             const typhon::Sample* s = currentSample();
             if (s == nullptr) return;
             const float x = (float) e.x;
@@ -207,7 +229,7 @@ namespace tui
         {
             setRef = ctx.proc.laneSet (lane);
             if (setRef == nullptr || setRef->empty()) return nullptr;
-            const auto* s = setRef->layers.back()[0].get();
+            const auto* s = setRef->display ((int) paramValue ("var") - 1);
             return (s != nullptr && s->length() >= 2) ? s : nullptr;
         }
         float paramValue (const char* w) const
@@ -284,6 +306,7 @@ namespace tui
         float norm = 1.0f;
         double viewStart = 0.0, viewLen = 1.0, panFrom = 0.0;
         int dragWhat = 0;
+        juce::Rectangle<int> varPrev, varNext;
     };
 
     // ------------------------------------------------------------------------
@@ -706,7 +729,8 @@ namespace tui
             wave.slices.clear();
             auto set = ctx.proc.laneSet (lane);
             if (set && ! set->empty())
-                wave.slices = typhon::detectSlices (*set->layers.back()[0], (float) sliceSens.getValue(), maxSlices);
+                if (auto* d = set->display ((int) ctx.proc.apvts.getRawParameterValue (typhon::pid (lane, "var"))->load() - 1))
+                    wave.slices = typhon::detectSlices (*d, (float) sliceSens.getValue(), maxSlices);
             repaint();
         }
 

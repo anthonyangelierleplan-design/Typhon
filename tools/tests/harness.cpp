@@ -228,6 +228,47 @@ int main (int argc, char** argv)
         CHECK (u.pattern.get (2, 4).on() && ! u.canRedo(), "rétablir x2 : tout revient");
     }
 
+    // --- 1d) bibliothèque de machines (dossier de test : getenv TY_LIB) ---------
+    if (auto* libDir = std::getenv ("TY_LIB"))
+    {
+        TyphonProcessor p; FakeHead h; p.setPlayHead (&h);
+        p.settings.setLibraryPath (libDir);
+        p.rescanLibrary();
+        CHECK (p.library.size() == 2, "bibliothèque : %d machines (2, dossier vide ignoré)", (int) p.library.size());
+        const typhon::LibMachine* dr = nullptr; const typhon::LibMachine* lm = nullptr;
+        for (auto& m : p.library) { if (m.name == "Boss DR-110") dr = &m; if (m.name == "Linn LM-1") lm = &m; }
+        if (dr != nullptr && lm != nullptr)
+        {
+            juce::String roles;
+            for (auto& sd : dr->sounds) roles << sd.name << "=" << sd.role << "(" << sd.totalFiles() << ") ";
+            std::printf ("        DR-110 : %s\n", roles.toRawUTF8());
+            const typhon::LibSound* bd = nullptr; for (auto& sd : dr->sounds) if (sd.name == "BD") bd = &sd;
+            CHECK (bd != nullptr && bd->role == 0 && bd->variants.size() == 1 && bd->variants[0].size() == 3, "DR-110 BD : kick, 3 round robin (fichiers sans extension lus, doublon et ._ ignorés)");
+            bool ohOk = false, chOk = false; for (auto& sd : dr->sounds) { if (sd.name == "OH") ohOk = sd.role == 5; if (sd.name == "CH") chOk = sd.role == 4; }
+            CHECK (ohOk && chOk, "DR-110 : CH = hat fermé, OH = hat ouvert");
+            juce::String r2; for (auto& sd : lm->sounds) r2 << sd.name << "=" << sd.role << "[" << (int) sd.variants.size() << "] ";
+            std::printf ("        LM-1 : %s\n", r2.toRawUTF8());
+            const typhon::LibSound* kick = nullptr; for (auto& sd : lm->sounds) if (sd.name == "Kick") kick = &sd;
+            CHECK (kick != nullptr && kick->variants.size() == 5 && kick->role == 0, "LM-1 Kick 1..5 : un son, 5 variantes");
+            p.loadMachineKit (*dr);
+            p.prepareToPlay (48000.0, 512);
+            auto rr = run (p, h, 4.0);
+            CHECK (rr.finite && rr.peak > 0.05f, "kit DR-110 chargé et joué (pic %.2f), pistes : %s / %s", rr.peak, p.laneSource (0).toRawUTF8(), p.laneSource (4).toRawUTF8());
+            // variante par pas : Kick LM-1 sur la piste 0, variante 5 au pas 1
+            CHECK (p.loadLibrarySound (0, *kick), "LM-1 Kick chargé sur la piste Kick");
+            CHECK (p.laneVariants (0) == 5, "piste Kick : 5 variantes");
+            typhon::Step vs; vs.vel = 100; vs.var = 5; p.pattern.set (0, 0, vs);
+            auto r3 = run (p, h, 2.0);
+            CHECK (r3.finite, "variante par pas : lecture stable");
+            juce::MemoryBlock mb; p.getStateInformation (mb);
+            TyphonProcessor q; q.setStateInformation (mb.getData(), (int) mb.getSize());
+            CHECK (q.laneVariants (0) == 5 && q.laneSource (0).contains ("Kick") && q.pattern.get (0, 0).var == 5, "état : son de machine et variante retrouvés (%s)", q.laneSource (0).toRawUTF8());
+            p.previewSound (*kick, 2);
+            auto r4 = run (p, h, 0.3);
+            CHECK (r4.finite, "écoute d'un son de la bibliothèque");
+        }
+    }
+
     // --- 2) état du projet ---------------------------------------------------
     {
         TyphonProcessor a;
@@ -325,6 +366,7 @@ int main (int argc, char** argv)
                 if (auto* b = dynamic_cast<juce::Button*> (findBtn (ui, juce::String::fromUTF8 ("\xe2\xa4\xa2 AGRANDIR")))) { b->triggerClick(); juce::MessageManager::getInstance()->runDispatchLoopUntil (50); shot ("editor.png"); }
                 if (auto* b = dynamic_cast<juce::Button*> (findBtn (ui, "FERMER"))) { b->triggerClick(); juce::MessageManager::getInstance()->runDispatchLoopUntil (50); }
                 if (auto* b = dynamic_cast<juce::Button*> (findBtn (ui, "MIX"))) { b->triggerClick(); juce::MessageManager::getInstance()->runDispatchLoopUntil (50); shot ("mix.png"); }
+                if (auto* b = dynamic_cast<juce::Button*> (findBtn (ui, "SONS"))) { b->triggerClick(); juce::MessageManager::getInstance()->runDispatchLoopUntil (200); shot ("sons.png"); }
                 if (auto* b = dynamic_cast<juce::Button*> (findBtn (ui, "CAPTURE"))) { b->triggerClick(); juce::MessageManager::getInstance()->runDispatchLoopUntil (50); shot ("capture.png"); }
                 if (auto* b = dynamic_cast<juce::Button*> (findBtn (ui, juce::String::fromUTF8 ("PARAM\xc3\x88TRES")))) { b->triggerClick(); juce::MessageManager::getInstance()->runDispatchLoopUntil (50); shot ("settings.png"); }
             }

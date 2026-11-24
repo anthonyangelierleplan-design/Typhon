@@ -198,6 +198,11 @@ namespace tui
                             tri.addTriangle (bx, by, bx + 6.0f, by - 4.0f, bx + 6.0f, by + 4.0f);
                             g.setColour (t.bg); g.fillPath (tri);
                         }
+                        if (s.var > 0)
+                        {
+                            g.setColour (t.bg); g.setFont (mono (9.0f, true));
+                            g.drawText ("v" + juce::String (s.var), r.toNearestInt().reduced (2, 3), juce::Justification::centredBottom);
+                        }
                         if (s.dur != 0)
                         {
                             g.setColour (s.dur == 1 ? t.bg : t.lcdTx);
@@ -524,6 +529,14 @@ namespace tui
             durM.addItem (41, juce::String::fromUTF8 ("Limit\xc3\xa9" "e au pas"), true, s.dur == 1);
             durM.addItem (42, juce::String::fromUTF8 ("Libre (jou\xc3\xa9" "e comme r\xc3\xa9gl\xc3\xa9" "e)"), true, s.dur == 2);
             m.addSubMenu (juce::String::fromUTF8 ("Dur\xc3\xa9" "e") + juce::String (s.dur == 1 ? juce::String::fromUTF8 (" (limit\xc3\xa9" "e)") : (s.dur == 2 ? juce::String (" (libre)") : juce::String())), durM);
+            const int nVar = ctx.proc.laneVariants (lane);
+            if (nVar > 1)
+            {
+                juce::PopupMenu varM;
+                varM.addItem (300, "Suit la piste", true, s.var == 0);
+                for (int v = 1; v <= std::min (15, nVar); ++v) varM.addItem (300 + v, "Variante " + juce::String (v), true, s.var == v);
+                m.addSubMenu ("Variante" + juce::String (s.var > 0 ? " (" + juce::String (s.var) + ")" : juce::String()), varM);
+            }
             m.addItem (10, juce::String::fromUTF8 ("Jouer \xc3\xa0 l'envers (reverse)"), true, s.rev);
 
             lockM.addItem (30, juce::String::fromUTF8 ("R\xc3\xa9gler ce pas..."));
@@ -558,7 +571,10 @@ namespace tui
                         case 40: case 41: case 42: turnOn(); x.dur = r - 40; break;
                         case 50: safe->pasteAt (lane, at); return;
                         case 31: pat.clearLocks (lane, at); break;
-                        default: if (r >= 200 && r <= 224) { turnOn(); x.pitch = r - 212; } break;
+                        default:
+                            if (r >= 200 && r <= 224) { turnOn(); x.pitch = r - 212; }
+                            if (r >= 300 && r <= 315) { turnOn(); x.var = r - 300; }
+                            break;
                     }
                     pat.set (lane, at, x);
                     safe->repaint();

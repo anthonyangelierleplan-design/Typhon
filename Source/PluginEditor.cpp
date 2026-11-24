@@ -5,6 +5,7 @@
 #include "UiCapture.h"
 #include "UiSettings.h"
 #include "UiMix.h"
+#include "UiLibrary.h"
 
 using namespace tui;
 
@@ -85,8 +86,8 @@ private:
 struct TyphonEditor::Ui : public juce::Component, private juce::Timer
 {
     Ui (TyphonProcessor& p)
-        : ctx { p }, look (ctx), grid (ctx), lane (ctx), capture (ctx), settingsPage (ctx), mixPage (ctx), editor (ctx),
-          tabSeq (ctx, juce::String::fromUTF8 ("S\xc3\x89QUENCEUR")), tabCap (ctx, "CAPTURE"), tabMix (ctx, "MIX"), fillSet (ctx, juce::String::fromUTF8 ("R\xc3\x89GLAGES FILL")),
+        : ctx { p }, look (ctx), grid (ctx), lane (ctx), capture (ctx), settingsPage (ctx), mixPage (ctx), libPage (ctx), editor (ctx),
+          tabSeq (ctx, juce::String::fromUTF8 ("S\xc3\x89QUENCEUR")), tabCap (ctx, "CAPTURE"), tabMix (ctx, "MIX"), tabLib (ctx, "SONS"), fillSet (ctx, juce::String::fromUTF8 ("R\xc3\x89GLAGES FILL")),
           chokeAllBtn (ctx, "CHOKE GLOBAL"), undoBtn (ctx, juce::String::fromUTF8 ("\xe2\x86\xb6")), redoBtn (ctx, juce::String::fromUTF8 ("\xe2\x86\xb7")), settingsBtn (ctx, juce::String::fromUTF8 ("PARAM\xc3\x88TRES")),
           dragBtn (ctx), fillBtn (ctx)
     {
@@ -96,8 +97,12 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
         addChildComponent (capture);
         addChildComponent (settingsPage);
         addChildComponent (mixPage);
+        addChildComponent (libPage);
+        libPage.onLaneLoaded = [this] (int l) { if (l >= 0) { grid.selected = l; lane.setLane (l); } else lane.setLane (lane.lane); grid.repaint(); };
         addChildComponent (editor);
-        for (auto* b : { &tabSeq, &tabCap, &tabMix, &settingsBtn, &chokeAllBtn }) { addAndMakeVisible (*b); b->textSize = 13.0f; }
+        for (auto* b : { &tabSeq, &tabCap, &tabMix, &tabLib, &settingsBtn, &chokeAllBtn }) { addAndMakeVisible (*b); b->textSize = 13.0f; }
+        tabLib.isOn = [this] { return page == 4; };
+        tabLib.onClick = [this] { setPage (4); };
         tabMix.isOn = [this] { return page == 3; };
         for (auto* b : { &undoBtn, &redoBtn }) { addAndMakeVisible (*b); b->textSize = 20.0f; }
         undoBtn.setTooltip ("Annuler (Ctrl+Z)"); redoBtn.setTooltip (juce::String::fromUTF8 ("R\xc3\xa9tablir (Ctrl+Y)"));
@@ -229,6 +234,7 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
         for (auto* k : masterKnobs) k->setVisible (seq);
         fillAuto.setVisible (seq); dragBtn.setVisible (seq); fillBtn.setVisible (seq); fillSet.setVisible (seq);
         mixPage.setVisible (pg == 3);
+        libPage.setVisible (pg == 4);
         capture.setVisible (pg == 1);
         ctx.proc.capture().monitor.store (pg == 1);
         settingsPage.setVisible (pg == 2);
@@ -328,19 +334,21 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
     void resized() override
     {
         // en-tête
-        tabSeq.setBounds (268, 16, 150, 40);
-        tabCap.setBounds (424, 16, 116, 40);
-        tabMix.setBounds (546, 16, 80, 40);
+        tabSeq.setBounds (262, 16, 132, 40);
+        tabCap.setBounds (400, 16, 100, 40);
+        tabMix.setBounds (506, 16, 64, 40);
+        tabLib.setBounds (576, 16, 72, 40);
         settingsBtn.setBounds (baseW - 24 - 118, 18, 118, 36);
         chokeAllBtn.setBounds (settingsBtn.getX() - 8 - 122, 18, 122, 36);
         redoBtn.setBounds (chokeAllBtn.getX() - 10 - 44, 18, 44, 36);
         undoBtn.setBounds (redoBtn.getX() - 6 - 44, 18, 44, 36);
-        lcdArea = { 640, 14, undoBtn.getX() - 12 - 640, 44 };
+        lcdArea = { 656, 14, undoBtn.getX() - 10 - 656, 44 };
 
         auto body = juce::Rectangle<int> (0, headerH, baseW, baseH - headerH);
         capture.setBounds (body);
         settingsPage.setBounds (body);
         mixPage.setBounds (body);
+        libPage.setBounds (body);
 
         auto main = juce::Rectangle<int> (24, headerH + 18, baseW - 48, baseH - headerH - bottomH - 30);
         editor.setBounds (main);
@@ -380,8 +388,9 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
     CapturePage capture;
     SettingsPage settingsPage;
     MixPage mixPage;
+    LibraryPage libPage;
     SampleEditor editor;
-    Pill tabSeq, tabCap, tabMix, fillSet, chokeAllBtn, undoBtn, redoBtn, settingsBtn;
+    Pill tabSeq, tabCap, tabMix, tabLib, fillSet, chokeAllBtn, undoBtn, redoBtn, settingsBtn;
     juce::uint32 uiActiveUntil = 0;
     int undoTick = 0;
     juce::SharedResourcePointer<juce::TooltipWindow> tooltips;

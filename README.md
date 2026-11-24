@@ -16,6 +16,13 @@ Capture les sons d'EZdrummer 3 une fois pour toutes, puis les rejoue comme des s
 - Onglet MIX : réverbe (bus A), delay calé sur le tempo (bus B), envois et ducking par piste, master (transient + compression / expansion vers le haut ou le bas).
 - À l'arrêt de la lecture, tous les sons s'arrêtent (fondu court).
 
+## Bibliothèque de boîtes à rythmes (onglet SONS)
+- Dossier racine (réglable) : un sous-dossier par machine, puis des catégories (Bass Drum, HiHat...) ou directement les fichiers.
+- « DR-110 BD RR1..RR20 » = variantes de jeu (round robin, alternées automatiquement) ; « Cabasa 1, 2, 3 » = variantes du son.
+- Fichiers sans extension lus quand même ; « ._xxx » ignorés ; doublons « RR3 » / « RR3.wav » fusionnés.
+- Clic = écouter, double-clic = charger sur la piste conseillée, « Charger le kit complet » = 8 pistes d'un coup.
+- Variante : flèches dans la waveform (piste) ou clic droit > Variante (par pas).
+
 ## Sortir Typhon sur plusieurs pistes dans Ableton
 1. PARAMÈTRES > Sorties > Multi-out (réglé par défaut).
 2. Crée une piste audio par élément. Dans « Audio From », choisis la piste de Typhon, puis la sortie (ex. « Out 2 Snare »), et mets Monitor sur « In ».

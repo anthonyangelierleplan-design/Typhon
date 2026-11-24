@@ -29,6 +29,7 @@ void TyphonSettings::load()
     get ("uiScale", uiScale, 0, 3);
     get ("snapZero", snapZero, 0, 1);
     get ("captureRate", captureRate, 0, 1);
+    { const juce::ScopedLock sl (lock); libPath = xml->getStringAttribute ("libraryPath", libPath); }
 }
 
 void TyphonSettings::save() const
@@ -44,6 +45,7 @@ void TyphonSettings::save() const
     x.setAttribute ("uiScale", uiScale.load());
     x.setAttribute ("snapZero", snapZero.load());
     x.setAttribute ("captureRate", captureRate.load());
+    { const juce::ScopedLock sl (lock); x.setAttribute ("libraryPath", libPath); }
     file().getParentDirectory().createDirectory();
     x.writeTo (file());
 }
@@ -137,6 +139,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout TyphonProcessor::createLayou
         grp->addChild (f (pid (i, "gdur"), n + juce::String::fromUTF8 ("Grain dur\xc3\xa9" "e"), 30.0f, 4000.0f, 600.0f, 600.0f));
         grp->addChild (f (pid (i, "grev"), n + juce::String::fromUTF8 ("Grains invers\xc3\xa9s"), 0.0f, 1.0f, 0.0f));
         grp->addChild (std::make_unique<AudioParameterBool> (ParameterID { pid (i, "gfreeze"), 1 }, n + "Grain freeze", false));
+        grp->addChild (std::make_unique<AudioParameterInt> (ParameterID { pid (i, "var"), 1 }, n + "Variante", 1, 16, 1));
         grp->addChild (std::make_unique<AudioParameterBool> (ParameterID { pid (i, "steplen"), 1 }, n + juce::String::fromUTF8 ("Dur\xc3\xa9" "e limit\xc3\xa9" "e au pas"), false));
         L.add (std::move (grp));
     }
@@ -195,7 +198,7 @@ TyphonProcessor::TyphonProcessor()
         lp[i] = { P ("vol"), P ("pan"), P ("pitch"), P ("start"), P ("end"), P ("decay"), P ("choke"), P ("group"), P ("fade"), P ("vsens"),
                   P ("out"), P ("rev"), P ("tatt"), P ("tsus"), P ("dmode"), P ("dthr"), P ("dratio"), P ("datt"), P ("drel"), P ("dmix"), P ("mute"), P ("gate"),
                   P ("fcut"), P ("fres"), P ("ftype"), P ("sendA"), P ("sendB"), P ("duck"),
-                  P ("gran"), P ("gpos"), P ("gsize"), P ("gdens"), P ("gspray"), P ("gpitch"), P ("gprand"), P ("gstereo"), P ("gspeed"), P ("gdur"), P ("grev"), P ("gfreeze"), P ("steplen") };
+                  P ("gran"), P ("gpos"), P ("gsize"), P ("gdens"), P ("gspray"), P ("gpitch"), P ("gprand"), P ("gstereo"), P ("gspeed"), P ("gdur"), P ("grev"), P ("gfreeze"), P ("steplen"), P ("var") };
         meters[i].store (0.0f);
         hitCounter[i].store (0);
         captureNotes[i].store (captureNoteDefault[i]);
@@ -270,6 +273,8 @@ void TyphonProcessor::resetLaneToFallback (int lane)
 static std::shared_ptr<Sample> readSample (juce::AudioFormatManager& fm, const juce::File& f)
 {
     std::unique_ptr<juce::AudioFormatReader> r (fm.createReaderFor (f));
+    if (r == nullptr)   // fichier sans extension (ou mal nommé) : on essaie tous les formats sur son contenu
+        if (auto in = f.createInputStream()) r.reset (fm.createReaderFor (std::unique_ptr<juce::InputStream> (in.release())));
     if (r == nullptr || r->lengthInSamples <= 0) return nullptr;
     const int n = (int) std::min<juce::int64> (r->lengthInSamples, (juce::int64) (r->sampleRate * 60.0));
     juce::AudioBuffer<float> b ((int) std::max (1u, r->numChannels), n);
@@ -410,7 +415,9 @@ void TyphonProcessor::trigger (int lane, int vel, int chokeMode, int64_t gateSam
         }
     }
 
-    const Sample* smp = set->pick (vel, L.rr);
+    int variant = (int) P.var->load() - 1;
+    if (step >= 0) { const Step st = pattern.get (lane, step); if (st.var > 0) variant = st.var - 1; }
+    const Sample* smp = set->pick (vel, L.rr, variant);
     if (smp == nullptr || smp->length() < 2) return;
 
     const float vs = P.vsens->load();
@@ -757,6 +764,25 @@ void TyphonProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         }
     }
 
+    // écoute d'un son de la bibliothèque
+    if (previewTrigger.exchange (false))
+    {
+        auto ps = std::atomic_load (&previewSet);
+        if (ps != nullptr && ! ps->empty())
+        {
+            uint32_t rr = 0;
+            previewVoice.keep = ps; previewVoice.smp = ps->pick (100, rr, 0);
+            if (previewVoice.smp != nullptr)
+            {
+                previewVoice.pos = 0; previewVoice.startPos = 0; previewVoice.endPos = previewVoice.smp->length();
+                previewVoice.inc = previewVoice.smp->rate / sr; previewVoice.reverse = false;
+                previewVoice.gain = 0.8f; previewVoice.gL = previewVoice.gR = 1.0f; previewVoice.fade = 1.0f; previewVoice.fadeStep = 0.0f;
+                previewVoice.env = 1.0f; previewVoice.envMul = 1.0f; previewVoice.gateLeft = -1; previewVoice.active = true;
+            }
+        }
+    }
+    if (previewVoice.active) previewVoice.render (mainBus.getWritePointer (0), mainBus.getWritePointer (1), n, curQuality);
+
     diag::audio ("delay");
     // 8) Bus B : delay calé sur le tempo (ping-pong possible, tonalité dans la boucle)
     {
@@ -815,7 +841,8 @@ int TyphonProcessor::sliceLane (int lane, float sensitivity, int maxSlices, bool
 {
     auto set = laneSet (lane);
     if (set == nullptr || set->empty()) return 0;
-    auto src = set->layers.back()[0];
+    const Sample* src = set->display ((int) lp[lane].var->load() - 1);
+    if (src == nullptr) return 0;
     auto starts = detectSlices (*src, sensitivity, juce::jlimit (2, numLanes, maxSlices));
     const int count = std::min ((int) starts.size(), numLanes);
     if (count < 1) return 0;
@@ -959,6 +986,12 @@ void TyphonProcessor::setStateInformation (const void* data, int sizeInBytes)
         {
             const auto path = src->getStringAttribute ("lane" + juce::String (l));
             if (path.isEmpty()) { resetLaneToFallback (l); continue; }
+            if (path.startsWith ("lib:"))
+            {
+                LibSound s;
+                if (! decodeSound (path, s) || ! loadLibrarySound (l, s)) resetLaneToFallback (l);
+                continue;
+            }
             if (path.startsWith ("kit:"))
             {
                 const auto folder = path.substring (4);
@@ -1054,6 +1087,69 @@ bool TyphonProcessor::redo()
     stable = redoStack.back(); redoStack.pop_back();
     applySnapshot (stable);
     return true;
+}
+
+// ============================================================================
+//  Bibliothèque de machines
+// ============================================================================
+void TyphonProcessor::rescanLibrary()
+{
+    auto path = settings.libraryPath();
+    if (path.isEmpty())
+    {
+        auto guess = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile ("Ableton").getChildFile ("Alex Ball Free Sample Packs");
+        if (guess.isDirectory()) { path = guess.getFullPathName(); settings.setLibraryPath (path); }
+    }
+    library = scanLibrary (juce::File (path));
+}
+
+static std::shared_ptr<SampleSet> loadSoundSet (const LibSound& s, juce::AudioFormatManager& fm)
+{
+    auto set = std::make_shared<SampleSet>();
+    for (auto& v : s.variants)
+    {
+        std::vector<std::shared_ptr<Sample>> list;
+        for (auto& f : v) if (auto smp = readSample (fm, f)) list.push_back (smp);
+        if (! list.empty()) set->variants.push_back (list);
+    }
+    set->name = (s.machine.isNotEmpty() ? s.machine + " - " + s.name : s.name).toStdString();
+    return set->variants.empty() ? nullptr : set;
+}
+
+bool TyphonProcessor::loadLibrarySound (int lane, const LibSound& s)
+{
+    if (lane < 0 || lane >= numLanes) return false;
+    juce::AudioFormatManager fm; fm.registerBasicFormats();
+    auto set = loadSoundSet (s, fm);
+    if (set == nullptr) return false;
+    setLaneSet (lane, set);
+    if (auto* p = apvts.getParameter (pid (lane, "var"))) p->setValueNotifyingHost (p->convertTo0to1 (1.0f));
+    const juce::ScopedLock sl (srcLock);
+    laneSourceText[lane] = juce::String (set->name);
+    laneSourcePath[lane] = encodeSound (s);
+    return true;
+}
+
+void TyphonProcessor::loadMachineKit (const LibMachine& m)
+{
+    const auto pick = pickKit (m);
+    for (int l = 0; l < numLanes; ++l)
+        if (pick[(size_t) l] >= 0) loadLibrarySound (l, m.sounds[(size_t) pick[(size_t) l]]);
+    const juce::ScopedLock sl (srcLock);
+    kitName = m.name;
+}
+
+void TyphonProcessor::previewSound (const LibSound& s, int variant)
+{
+    if (variant < 0 || variant >= (int) s.variants.size() || s.variants[(size_t) variant].empty()) return;
+    juce::AudioFormatManager fm; fm.registerBasicFormats();
+    auto smp = readSample (fm, s.variants[(size_t) variant][0]);
+    if (smp == nullptr) return;
+    auto set = std::make_shared<SampleSet>();
+    set->variants.push_back ({ smp });
+    auto old = std::atomic_exchange (&previewSet, set);
+    { const juce::ScopedLock sl (graveLock); if (old != nullptr) graveyard.push_back (old); }
+    previewTrigger.store (true);
 }
 
 juce::AudioProcessorEditor* TyphonProcessor::createEditor() { return new TyphonEditor (*this); }
