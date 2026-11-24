@@ -118,6 +118,7 @@ namespace typhon { namespace apc {
                 send (dawMode (false));
             }
             if (in != nullptr) in->stop();
+            if (logStream != nullptr) logStream->flush();
             in.reset(); out.reset();
             dawOn = false;
             Link* me = this; owner.compare_exchange_strong (me, nullptr);
@@ -126,9 +127,31 @@ namespace typhon { namespace apc {
         void handleIncomingMidiMessage (juce::MidiInput*, const juce::MidiMessage& m) override
         {
             const auto* d = m.getRawData(); const int n = m.getRawDataSize();
+            logMessage (d, n);
             if (isIdentityReply (d, n)) { identityOk.store (true); return; }
             surface.handle (d, n, pat, host);
         }
+
+        // journal des messages reçus de l'APC64 (diagnostic) : Documents/Foudre Audio/Typhon/apc64_log.txt
+        void logMessage (const uint8_t* d, int n)
+        {
+            if (logged >= 4000) return;
+            if (logStream == nullptr)
+            {
+                auto f = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile ("Foudre Audio").getChildFile ("Typhon").getChildFile ("apc64_log.txt");
+                f.getParentDirectory().createDirectory();
+                f.deleteFile();
+                logStream = std::make_unique<juce::FileOutputStream> (f);
+                if (! logStream->openedOk()) { logStream.reset(); logged = 4000; return; }
+            }
+            juce::String line = juce::String (juce::Time::getMillisecondCounter()) + " :";
+            for (int i = 0; i < std::min (n, 24); ++i) line << " " << juce::String::toHexString ((int) d[i]).paddedLeft ('0', 2);
+            line << "  vue=" << surface.view.load() << " piste=" << surface.selLane.load() << " strips=" << surface.touchedStrips.load() << "\n";
+            logStream->writeText (line, false, false, nullptr);
+            if (++logged % 20 == 0) logStream->flush();
+        }
+        std::unique_ptr<juce::FileOutputStream> logStream;
+        int logged = 0;
 
         void send (const std::vector<uint8_t>& b) { if (out != nullptr) out->sendMessageNow (juce::MidiMessage (b.data(), (int) b.size())); }
         void raw (uint8_t a, uint8_t b, uint8_t c) { if (out != nullptr) out->sendMessageNow (juce::MidiMessage (a, b, c)); }

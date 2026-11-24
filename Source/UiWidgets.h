@@ -30,7 +30,7 @@ namespace tui
     }
     inline juce::Font font (float size, bool bold = false)
     {
-        return withFace (bold ? faces().bold : faces().medium, size * 1.08f, juce::Font (juce::FontOptions (size, bold ? juce::Font::bold : juce::Font::plain)));
+        return withFace (bold ? faces().bold : faces().medium, size * 1.24f, juce::Font (juce::FontOptions (size, bold ? juce::Font::bold : juce::Font::plain)));
     }
     inline juce::Font mono (float size, bool bold = false)
     {

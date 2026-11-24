@@ -509,7 +509,7 @@ int main (int argc, char** argv)
                 if (auto* b = dynamic_cast<juce::Button*> (findBtn (ui, "MIX"))) { b->triggerClick(); juce::MessageManager::getInstance()->runDispatchLoopUntil (50); shot ("mix.png"); }
                 if (auto* b = dynamic_cast<juce::Button*> (findBtn (ui, "SONS"))) { b->triggerClick(); juce::MessageManager::getInstance()->runDispatchLoopUntil (200); shot ("sons.png"); }
                 if (auto* b = dynamic_cast<juce::Button*> (findBtn (ui, "CAPTURE"))) { b->triggerClick(); juce::MessageManager::getInstance()->runDispatchLoopUntil (50); shot ("capture.png"); }
-                if (auto* b = dynamic_cast<juce::Button*> (findBtn (ui, juce::String::fromUTF8 ("PARAM\xc3\x88TRES")))) { b->triggerClick(); juce::MessageManager::getInstance()->runDispatchLoopUntil (50); shot ("settings.png"); }
+                if (auto* b = dynamic_cast<juce::Button*> (findBtn (ui, juce::String::fromUTF8 ("\xe2\x9a\x99")))) { b->triggerClick(); juce::MessageManager::getInstance()->runDispatchLoopUntil (50); shot ("settings.png"); }
             }
         }
         std::printf ("        captures d'écran dans %s\n", shotDir.toRawUTF8());
