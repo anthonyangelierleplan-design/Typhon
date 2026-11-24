@@ -55,20 +55,27 @@ namespace typhon
 
         bool on() const { return vel > 0; }
 
+        // bornage par valeur (pas de références vers des temporaires : un plantage d'Ableton venait de là)
+        static int clampi (int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
         uint64_t pack() const
         {
+            const uint32_t r  = (uint32_t) (clampi (ratchet, 1, 4) - 1);
+            const uint32_t ln = (uint32_t) (clampi (len, 1, 32) - 1);
+            const uint32_t pt = (uint32_t) (clampi (pitch, -12, 12) + 12);
+            const uint32_t vr = (uint32_t) clampi (var, 0, 15);
             const uint32_t lo = (uint32_t) (vel & 127)
-                 | ((uint32_t) ((std::max (1, std::min (4, ratchet)) - 1) & 3) << 7)
-                 | ((uint32_t) (split ? 1 : 0) << 9)
-                 | ((uint32_t) ((std::max (1, std::min (32, len)) - 1) & 31) << 10)
-                 | ((uint32_t) (choke & 3) << 15)
-                 | ((uint32_t) ((std::max (-12, std::min (12, pitch)) + 12) & 31) << 17)
-                 | ((uint32_t) (rev ? 1 : 0) << 22)
-                 | ((uint32_t) (dur & 3) << 23)
-                 | ((uint32_t) (std::max (0, std::min (15, var)) & 15) << 25);
-            const uint32_t hi = (uint32_t) ((100 - std::max (0, std::min (100, prob))) & 127)
-                 | ((uint32_t) (std::max (-50, std::min (50, nudge)) & 127) << 7)
-                 | ((uint32_t) (flam ? 1 : 0) << 14);
+                 | ((r & 3u) << 7)
+                 | ((split ? 1u : 0u) << 9)
+                 | ((ln & 31u) << 10)
+                 | (((uint32_t) choke & 3u) << 15)
+                 | ((pt & 31u) << 17)
+                 | ((rev ? 1u : 0u) << 22)
+                 | (((uint32_t) dur & 3u) << 23)
+                 | ((vr & 15u) << 25);
+            const uint32_t pr = (uint32_t) (100 - clampi (prob, 0, 100));
+            const uint32_t nd = (uint32_t) clampi (nudge, -50, 50);
+            const uint32_t hi = (pr & 127u) | ((nd & 127u) << 7) | ((flam ? 1u : 0u) << 14);
             return (uint64_t) lo | ((uint64_t) hi << 32);
         }
         static Step unpack (uint64_t w)
@@ -87,7 +94,7 @@ namespace typhon
             s.dur = (int) ((v >> 23) & 3); if (s.dur > 2) s.dur = 0;
             s.var = (int) ((v >> 25) & 15);
             s.prob = 100 - (int) (hi & 127); if (s.prob < 0) s.prob = 100;
-            int n = (int) ((hi >> 7) & 127); if (n >= 64) n -= 128; s.nudge = std::max (-50, std::min (50, n));
+            int n = (int) ((hi >> 7) & 127); if (n >= 64) n -= 128; s.nudge = clampi (n, -50, 50);
             s.flam = ((hi >> 14) & 1) != 0;
             return s;
         }

@@ -642,8 +642,8 @@ namespace tui
             using namespace typhon;
             auto& pat = ctx.proc.pattern;
             Step h = pat.get (lane, head);
-            if (! h.on()) return;
-            len = juce::jlimit (1, ctx.proc.seqLength() - head, len);
+            if (! h.on() || head < 0 || head >= ctx.proc.seqLength()) return;
+            len = juce::jlimit (1, std::max (1, ctx.proc.seqLength() - head), len);
             for (int k = head + 1; k < head + len; ++k) pat.set (lane, k, Step());
             h.len = len;
             pat.set (lane, head, h);
