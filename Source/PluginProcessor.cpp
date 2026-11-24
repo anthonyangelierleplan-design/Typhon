@@ -227,6 +227,8 @@ TyphonProcessor::TyphonProcessor()
     put (1, { 4, 12 }, 110);
     put (4, { 0, 2, 4, 6, 8, 10, 12, 14 }, 90);
 
+    diag::installCrashHandler();
+    watchdog = std::make_unique<diag::Watchdog>();
     captureEngine = std::make_unique<CaptureEngine> (*this);
     stable = takeSnapshot();
     startTimerHz (4);
@@ -236,6 +238,8 @@ TyphonProcessor::~TyphonProcessor()
 {
     stopTimer();
     captureEngine.reset();
+    watchdog.reset();
+    diag::removeCrashHandler();
 }
 
 void TyphonProcessor::timerCallback()
@@ -484,6 +488,8 @@ void TyphonProcessor::renderLanes (int from, int to)
 void TyphonProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
 {
     juce::ScopedNoDenormals noDenormals;
+    diag::AudioScope diagScope;
+    diag::audio ("debut du bloc");
     const int n = buffer.getNumSamples();
     for (int c = 0; c < buffer.getNumChannels(); ++c) buffer.clear (c, 0, n);
     if (laneBuf.getNumSamples() < n) laneBuf.setSize (numLanes * 2, n, false, true, true);
@@ -493,8 +499,7 @@ void TyphonProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
 
     curQuality = isNonRealtime() && settings.renderQuality.load() == 1 ? 2 : settings.quality.load();
 
-    struct Ev { int offset, lane, vel, choke; int64_t gate; int step, pitch; bool rev; };
-    Ev evs[768]; int nev = 0;
+    Ev* evs = evBuf.data(); int nev = 0;   // tampon préalloué (pas de gros tableau sur la pile du fil audio)
     auto addEv = [&] (int off, int lane, int vel, int ch, int64_t gate, int step = -1, int pitch = 0, bool rev = false)
     {
         if (nev < 768) evs[nev++] = { juce::jlimit (0, n - 1, off), lane, vel, ch, gate, step, pitch, rev };
@@ -533,6 +538,7 @@ void TyphonProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     const int aud = auditionMask.exchange (0);
     for (int l = 0; l < numLanes; ++l) if (aud & (1 << l)) addEv (0, l, 100, 0, -1);
 
+    diag::audio ("sequenceur");
     // 3) Séquenceur, calé sur la tête de lecture de l'hôte
     bool playing = false; double ppq = 0.0, bpm = 120.0;
     if (auto* ph = getPlayHead())
@@ -542,6 +548,8 @@ void TyphonProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
             if (auto p = pos->getPpqPosition()) ppq = *p; else playing = false;
             if (auto b = pos->getBpm()) bpm = *b;
         }
+    // garde-fous : une tête de lecture incohérente ne doit jamais bloquer le fil audio
+    if (! std::isfinite (ppq) || ! std::isfinite (bpm) || bpm < 1.0 || bpm > 2000.0 || std::fabs (ppq) > 1.0e9) { playing = false; bpm = 120.0; ppq = 0.0; }
     isPlayingNow.store (playing);
     lastBpm.store (bpm);
     // Arrêt de la lecture (barre d'espace) : tous les sons s'arrêtent avec un fondu court (les queues d'effets continuent)
@@ -574,7 +582,7 @@ void TyphonProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         for (int l = 0; l < numLanes; ++l) if (pFillLane[l]->load() > 0.5f) fo.laneMask |= (1u << l);
 
         const int64_t loopStart = (int64_t) std::floor (p0 / loopPpq);
-        const int64_t loopEnd = (int64_t) std::floor (p1 / loopPpq);
+        const int64_t loopEnd = std::min (loopStart + 2, (int64_t) std::floor (p1 / loopPpq));
         for (int64_t loop = loopStart - 1; loop <= loopEnd; ++loop)
             for (int st = 0; st < len; ++st)
             {
@@ -617,6 +625,7 @@ void TyphonProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     else curStep.store (-1);
     fillNow.store (fillOnNow);
 
+    diag::audio ("rendu des voix");
     // 4) Rendu des voix entre les événements (tri par insertion : stable, sans allocation)
     for (int a = 1; a < nev; ++a)
     {
@@ -627,7 +636,7 @@ void TyphonProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     const int duckSrc = (int) pDuckSrc->load();
     const float duckAmt = pDuckAmt->load();
     const float duckRelS = std::max (5.0f, pDuckRel->load()) * 0.001f, duckAttS = 0.003f;
-    int duckOffsets[128]; int nDuck = 0;
+    int* duckOffsets = duckBuf.data(); int nDuck = 0;
     int cursor = 0;
     for (int e = 0; e < nev; ++e)
     {
@@ -671,6 +680,7 @@ void TyphonProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         }
     }
 
+    diag::audio ("chaine des pistes");
     // 6) Chaîne par piste : filtre -> transient -> dynamique -> grain SP -> ducking -> volume / pan -> envois -> sortie
     const float spAmt = pSpAmt->load(), spBits = pSpBits->load(), spRate = pSpRate->load(), spFilt = pSpFilt->load();
     const int spMode = settings.spMode.load();
@@ -726,6 +736,7 @@ void TyphonProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         out.addFrom (1, 0, r, n);
     }
 
+    diag::audio ("reverbe");
     // 7) Bus A : réverbe
     const float retA = dbToGain (pFxaRet->load()), retB = dbToGain (pFxbRet->load());
     const bool duckFx = pDuckFx->load() > 0.5f && duckAmt > 0.0001f;
@@ -746,6 +757,7 @@ void TyphonProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         }
     }
 
+    diag::audio ("delay");
     // 8) Bus B : delay calé sur le tempo (ping-pong possible, tonalité dans la boucle)
     {
         static const double beats[6] = { 0.25, 0.5, 0.75, 1.0, 1.5, 2.0 };
@@ -773,6 +785,7 @@ void TyphonProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
             }
     }
 
+    diag::audio ("master");
     // 9) Master : transient -> dynamique (sortie principale), puis volume master sur toutes les sorties
     masterTr.process (mainBus.getWritePointer (0), mainBus.getWritePointer (1), n, pMtAtt->load(), pMtSus->load());
     masterDyn.process (mainBus.getWritePointer (0), mainBus.getWritePointer (1), n, (int) pMdMode->load(), pMdThr->load(),

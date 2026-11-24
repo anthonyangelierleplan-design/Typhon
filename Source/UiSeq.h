@@ -80,6 +80,7 @@ namespace tui
         void paint (juce::Graphics& g) override
         {
             using namespace typhon;
+            diag::ui ("dessin de la grille");
             const auto& t = ctx.th();
             auto& pat = ctx.proc.pattern;
             const int play = ctx.proc.playingStep();
@@ -533,9 +534,11 @@ namespace tui
             if (! clipBlock.empty()) m.addItem (50, juce::String::fromUTF8 ("Coller ici (Ctrl+V)"));
 
             juce::Component::SafePointer<SeqGrid> safe (this);
+            diag::ui ("menu du pas : ouverture");
             m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this).withMousePosition(),
                 [safe, lane, at] (int r)
                 {
+                    diag::ui ("menu du pas : choix recu");
                     if (safe == nullptr || r == 0) return;
                     auto& pat = safe->ctx.proc.pattern;
                     Step x = pat.get (lane, at);
@@ -559,6 +562,7 @@ namespace tui
                     }
                     pat.set (lane, at, x);
                     safe->repaint();
+                    diag::ui ("menu du pas : applique");
                 });
         }
 

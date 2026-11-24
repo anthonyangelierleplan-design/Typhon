@@ -174,6 +174,7 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
 
     ~Ui() override
     {
+        diag::uiBeat().store (0);
         ctx.proc.capture().monitor.store (false);
         stopTimer();
         setLookAndFeel (nullptr);
@@ -247,6 +248,8 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
 
     void timerCallback() override
     {
+        diag::uiBeat().store (std::max<juce::uint32> (1, juce::Time::getMillisecondCounter()));
+        diag::ui ("minuterie de l'interface");
         if (++undoTick % 10 == 0 && juce::Time::getMillisecondCounter() < uiActiveUntil && ! juce::ModifierKeys::currentModifiers.isAnyMouseButtonDown())
             ctx.proc.undoCommit();
         undoBtn.setEnabled (ctx.proc.canUndo() || juce::Time::getMillisecondCounter() < uiActiveUntil);
@@ -260,6 +263,7 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
 
     void paint (juce::Graphics& g) override
     {
+        diag::ui ("dessin de la fenetre");
         const auto& t = ctx.th();
         g.fillAll (t.bg);
         // en-tête

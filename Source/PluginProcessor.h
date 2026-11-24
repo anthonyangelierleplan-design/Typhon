@@ -2,6 +2,7 @@
 #include <JuceHeader.h>
 #include "Dsp.h"
 #include "Shared.h"
+#include "Diag.h"
 
 class CaptureEngine;
 
@@ -134,6 +135,9 @@ private:
     juce::Reverb reverb;
     typhon::TransientDesigner masterTr;
     typhon::Dynamics masterDyn;
+    struct Ev { int offset, lane, vel, choke; int64_t gate; int step, pitch; bool rev; };
+    std::array<Ev, 768> evBuf {};
+    std::array<int, 128> duckBuf {};
     float duckEnv = 10.0f;   // temps depuis le dernier coup de la source (s)
     int reverbTail = 0, delayTail = 0;
     bool wasPlaying = false;
@@ -168,6 +172,7 @@ private:
     int64_t lastBarIndex = -1;
 
     std::unique_ptr<CaptureEngine> captureEngine;
+    std::unique_ptr<diag::Watchdog> watchdog;
 
     struct Snapshot
     {

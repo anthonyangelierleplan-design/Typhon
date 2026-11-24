@@ -20,6 +20,13 @@ jobs:
       - name: Build
         run: cmake --build build --config Release --target Typhon_VST3 --parallel
 
+      - name: Copy debug symbols into the bundle
+        shell: pwsh
+        run: |
+          $pdb = Get-ChildItem -Path build -Recurse -Filter "Typhon.pdb" | Where-Object { $_.FullName -notmatch "Shared" } | Select-Object -First 1
+          if (-not $pdb) { $pdb = Get-ChildItem -Path build -Recurse -Filter "*.pdb" | Where-Object { $_.Name -like "Typhon*" } | Sort-Object Length -Descending | Select-Object -First 1 }
+          if ($pdb) { Copy-Item $pdb.FullName "build/Typhon_artefacts/Release/VST3/Typhon.vst3/Contents/x86_64-win/Typhon.pdb"; Write-Host "PDB: $($pdb.FullName)" } else { Write-Host "No PDB found" }
+
       - name: Upload VST3
         uses: actions/upload-artifact@v4
         with:
