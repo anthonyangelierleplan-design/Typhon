@@ -73,7 +73,9 @@ public:
     juce::String laneSource (int lane) const { const juce::ScopedLock sl (srcLock); return laneSourceText[lane]; }
 
     bool loadSampleFile (int lane, const juce::File& f);      // glisser-déposer
-    bool loadKitFolder (const juce::File& folder);             // kit capturé
+    bool loadKitFolder (const juce::File& folder);             // kit capturé ou enregistré
+    juce::File saveUserKit (const juce::String& name);         // « Mes kits » : copie les 8 pistes telles quelles
+    void renameLaneSource (int lane, const juce::String& n) { const juce::ScopedLock sl (srcLock); laneSourceText[lane] = n; }
     void resetLaneToFallback (int lane);
     juce::String currentKitName() const { const juce::ScopedLock sl (srcLock); return kitName; }
 

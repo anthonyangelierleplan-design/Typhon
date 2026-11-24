@@ -97,6 +97,14 @@ namespace tui
             for (int j = off; j < off + 16; ++j)
             {
                 auto r = stepRect (0, j);
+                if (j % 4 == 0)
+                {
+                    // temps forts (1, 5, 9, 13) : bande verticale sur toute la grille + numéro sur pastille
+                    auto band = juce::Rectangle<float> (r.getX() - 2.0f, (float) hy, r.getWidth() + 4.0f,
+                                                        stepRect (typhon::numLanes - 1, j).getBottom() + 2.0f - (float) hy);
+                    g.setColour (t.tx.withAlpha (0.06f)); g.fillRoundedRectangle (band, 6.0f);
+                    g.setColour (t.tx.withAlpha (0.14f)); g.fillRoundedRectangle (r.withY ((float) hy + 3.0f).withHeight ((float) hh - 6.0f), 5.0f);
+                }
                 g.setColour (j == play ? t.lcdTx : (j % 4 == 0 ? t.tx : t.sub.withAlpha (0.7f)));
                 g.drawText (juce::String (j + 1), (int) r.getX(), hy, (int) r.getWidth(), hh, juce::Justification::centred);
             }
@@ -121,9 +129,25 @@ namespace tui
                 g.fillRoundedRectangle (nr, 6.0f);
                 if (dropLane == lane) { g.setColour (t.lcdTx); g.drawRoundedRectangle (nr, 6.0f, 2.0f); }
                 const bool muted = ctx.proc.apvts.getRawParameterValue (pid (lane, "mute"))->load() > 0.5f;
-                g.setColour (muted ? t.sub : t.tx);
-                g.setFont (font (14.0f, true));
-                g.drawText (muted ? laneName (lane) + " (M)" : laneName (lane), nr.reduced (10, 0).toNearestInt(), juce::Justification::centredLeft);
+                // nom du sample chargé (glisser-déposer, bibliothèque, kit) ; le rôle de la piste passe en petit au-dessus
+                const auto src = ctx.proc.laneSource (lane);
+                const bool custom = src.isNotEmpty() && src != "Secours";
+                auto tr = nr.reduced (10, 0).toNearestInt();
+                tr.removeFromRight (34);
+                if (custom)
+                {
+                    auto top = tr.removeFromTop (tr.getHeight() / 2 - 1);
+                    g.setFont (font (10.0f, true)); g.setColour (t.sub);
+                    g.drawText (laneName (lane).toUpperCase() + (muted ? " (M)" : ""), top.withTrimmedBottom (-2), juce::Justification::bottomLeft);
+                    g.setFont (font (13.5f, true)); g.setColour (muted ? t.sub : t.tx);
+                    g.drawFittedText (src, tr.withTrimmedTop (1), juce::Justification::topLeft, 1, 0.8f);
+                }
+                else
+                {
+                    g.setColour (muted ? t.sub : t.tx);
+                    g.setFont (font (14.0f, true));
+                    g.drawText (muted ? laneName (lane) + " (M)" : laneName (lane), tr, juce::Justification::centredLeft);
+                }
                 g.setFont (mono (11.0f));
                 g.setColour (t.sub);
                 g.drawText (noteName (ctx.proc.noteForLane (lane)), nr.reduced (8, 0).toNearestInt(), juce::Justification::centredRight);
@@ -161,7 +185,7 @@ namespace tui
                     }
                     if (! s.on())
                     {
-                        g.setColour (j % 4 == 0 ? t.offBeat : t.off);
+                        g.setColour (j % 4 == 0 ? t.offBeat.interpolatedWith (t.tx, 0.10f) : t.off);
                         g.fillRoundedRectangle (r, 5.0f);
                     }
                     else

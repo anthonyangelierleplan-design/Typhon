@@ -361,6 +361,13 @@ bool TyphonProcessor::loadKitFolder (const juce::File& folder)
         const int lane = laneX->getIntAttribute ("index", -1);
         if (lane < 0 || lane >= numLanes) continue;
         auto set = std::make_shared<SampleSet>();
+        for (auto* varX : laneX->getChildWithTagNameIterator ("VARIANT"))
+        {
+            std::vector<std::shared_ptr<Sample>> v;
+            for (auto* fX : varX->getChildWithTagNameIterator ("FILE"))
+                if (auto s = readSample (fm, folder.getChildFile (fX->getStringAttribute ("name")))) v.push_back (s);
+            if (! v.empty()) set->variants.push_back (v);
+        }
         for (auto* layX : laneX->getChildWithTagNameIterator ("LAYER"))
         {
             std::vector<std::shared_ptr<Sample>> layer;
@@ -377,11 +384,62 @@ bool TyphonProcessor::loadKitFolder (const juce::File& folder)
         setLaneSet (lane, set);
         any = true;
         const juce::ScopedLock sl (srcLock);
-        laneSourceText[lane] = xml->getStringAttribute ("name");
+        laneSourceText[lane] = laneX->getStringAttribute ("label", xml->getStringAttribute ("name"));
         laneSourcePath[lane] = "kit:" + folder.getFullPathName();
     }
     if (any) { const juce::ScopedLock sl (srcLock); kitName = xml->getStringAttribute ("name", folder.getFileName()); }
     return any;
+}
+
+juce::File TyphonProcessor::saveUserKit (const juce::String& wanted)
+{
+    auto name = juce::File::createLegalFileName (wanted.trim());
+    if (name.isEmpty()) name = "Mon kit";
+    auto folder = libraryFolder().getChildFile (name);
+    for (int k = 2; folder.exists(); ++k) folder = libraryFolder().getChildFile (name + " " + juce::String (k));
+    if (! folder.createDirectory()) return {};
+    juce::WavAudioFormat wav;
+    auto writeOne = [&] (const Sample& smp, const juce::String& fname) -> bool
+    {
+        std::unique_ptr<juce::OutputStream> os (folder.getChildFile (fname).createOutputStream());
+        if (os == nullptr) return false;
+        std::unique_ptr<juce::AudioFormatWriter> w (wav.createWriterFor (os.get(), smp.rate, 2, 32, {}, 0));
+        if (w == nullptr) return false;
+        os.release();
+        const float* ch[2] = { smp.l.data(), smp.r.empty() ? smp.l.data() : smp.r.data() };
+        return w->writeFromFloatArrays (ch, 2, (int) smp.l.size());
+    };
+    juce::XmlElement kit ("TYPHON_KIT");
+    kit.setAttribute ("name", folder.getFileName());
+    kit.setAttribute ("user", 1);
+    for (int l = 0; l < numLanes; ++l)
+    {
+        auto set = laneSet (l);
+        if (set == nullptr || set->empty()) continue;
+        auto* lx = kit.createNewChildElement ("LANE");
+        lx->setAttribute ("index", l);
+        lx->setAttribute ("label", laneSource (l));
+        int fileNo = 0;
+        auto addFiles = [&] (juce::XmlElement* parent, const std::vector<std::shared_ptr<Sample>>& v)
+        {
+            for (auto& smp : v)
+            {
+                if (smp == nullptr || smp->l.empty()) continue;
+                const auto fname = "l" + juce::String (l + 1) + "_" + juce::String (++fileNo).paddedLeft ('0', 3) + ".wav";
+                if (writeOne (*smp, fname)) parent->createNewChildElement ("FILE")->setAttribute ("name", fname);
+            }
+        };
+        for (auto& v : set->variants) addFiles (lx->createNewChildElement ("VARIANT"), v);
+        for (size_t i = 0; i < set->layers.size(); ++i)
+        {
+            auto* ly = lx->createNewChildElement ("LAYER");
+            ly->setAttribute ("top", i < set->layerTopVel.size() ? set->layerTopVel[i] : 127);
+            addFiles (ly, set->layers[i]);
+        }
+    }
+    if (! kit.writeTo (folder.getChildFile ("kit.xml"))) return {};
+    { const juce::ScopedLock sl (srcLock); kitName = folder.getFileName(); }
+    return folder;
 }
 
 int TyphonProcessor::noteForLane (int lane) const

@@ -14,7 +14,7 @@ namespace tui
         std::function<void (int)> onLaneLoaded;   // pour rafraîchir le séquenceur
 
         LibraryPage (Ctx& c) : ctx (c), machineModel (*this, true), soundModel (*this, false),
-            chooseBtn (c, "CHOISIR LE DOSSIER"), rescanBtn (c, "RESCANNER"), kitBtn (c, "CHARGER LE KIT COMPLET")
+            chooseBtn (c, "CHOISIR LE DOSSIER"), rescanBtn (c, "RESCANNER"), kitBtn (c, "CHARGER LE KIT COMPLET"), saveKitBtn (c, "ENREGISTRER MON KIT"), myKitsBtn (c, "MES KITS")
         {
             for (auto* lb : { &machineList, &soundList })
             {
@@ -25,7 +25,9 @@ namespace tui
             }
             machineList.setModel (&machineModel);
             soundList.setModel (&soundModel);
-            for (auto* b : { &chooseBtn, &rescanBtn, &kitBtn }) { addAndMakeVisible (*b); b->textSize = 12.0f; }
+            for (auto* b : { &chooseBtn, &rescanBtn, &kitBtn, &saveKitBtn, &myKitsBtn }) { addAndMakeVisible (*b); b->textSize = 12.0f; }
+            saveKitBtn.onClick = [this] { askKitName(); };
+            myKitsBtn.onClick = [this] { showMyKits(); };
             kitBtn.strong = true; kitBtn.textSize = 14.0f;
             chooseBtn.onClick = [this] { chooseFolder(); };
             rescanBtn.onClick = [this] { rescan(); };
@@ -152,6 +154,64 @@ namespace tui
             kitBtn.setBounds (R.removeFromTop (44)); R.removeFromTop (14);
             curLbl = R.removeFromTop (16);
             curArea = R.removeFromTop (8 * 19);
+            R.removeFromTop (12);
+            auto kb = R.removeFromTop (34);
+            saveKitBtn.setBounds (kb.removeFromLeft (kb.getWidth() * 3 / 5 - 3)); kb.removeFromLeft (6);
+            myKitsBtn.setBounds (kb);
+        }
+
+        // « Mes kits » : les 8 pistes telles qu'elles sont (samples glissés, sons de machines, slices...)
+        // copiées dans Documents/Foudre Audio/Typhon/Kits/<nom> ; rechargeables partout
+        void askKitName()
+        {
+            nameWin = std::make_unique<juce::AlertWindow> (juce::String::fromUTF8 ("Enregistrer mon kit"),
+                                                          juce::String::fromUTF8 ("Les 8 pistes sont copi\xc3\xa9" "es dans ton dossier Kits : le kit reste complet m\xc3\xaame si tu d\xc3\xa9places les samples d'origine."),
+                                                          juce::MessageBoxIconType::NoIcon);
+            nameWin->addTextEditor ("name", ctx.proc.currentKitName() == "Kit de secours" ? juce::String ("Mon kit") : ctx.proc.currentKitName());
+            nameWin->addButton ("ENREGISTRER", 1, juce::KeyPress (juce::KeyPress::returnKey));
+            nameWin->addButton ("ANNULER", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+            juce::Component::SafePointer<LibraryPage> safe (this);
+            nameWin->enterModalState (true, juce::ModalCallbackFunction::create ([safe] (int r)
+            {
+                if (safe == nullptr || safe->nameWin == nullptr) return;
+                const auto name = safe->nameWin->getTextEditorContents ("name");
+                if (r == 1)
+                {
+                    auto f = safe->ctx.proc.saveUserKit (name);
+                    safe->status = f.exists() ? juce::String::fromUTF8 ("Kit \xc2\xab ") + f.getFileName() + juce::String::fromUTF8 (" \xc2\xbb enregistr\xc3\xa9.")
+                                              : juce::String::fromUTF8 ("Impossible d'enregistrer le kit.");
+                    if (safe->onLaneLoaded) safe->onLaneLoaded (-1);
+                    safe->repaint();
+                }
+                juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->nameWin.reset(); });
+            }), false);
+        }
+
+        void showMyKits()
+        {
+            juce::Array<juce::File> kits;
+            for (const auto& e : juce::RangedDirectoryIterator (TyphonProcessor::libraryFolder(), false, "*", juce::File::findDirectories))
+                if (e.getFile().getChildFile ("kit.xml").existsAsFile()) kits.add (e.getFile());
+            kits.sort();
+            juce::PopupMenu m;
+            m.addSectionHeader ("MES KITS");
+            if (kits.isEmpty()) m.addItem (-1, juce::String::fromUTF8 ("Aucun kit : compose le tien puis \xc2\xab Enregistrer mon kit \xc2\xbb"), false);
+            for (int i = 0; i < kits.size(); ++i) m.addItem (i + 1, kits[i].getFileName());
+            m.addSeparator();
+            m.addItem (10000, "Ouvrir le dossier Kits");
+            juce::Component::SafePointer<LibraryPage> safe (this);
+            m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&myKitsBtn), [safe, kits] (int r)
+            {
+                if (safe == nullptr || r <= 0) return;
+                if (r == 10000) { TyphonProcessor::libraryFolder().createDirectory(); TyphonProcessor::libraryFolder().startAsProcess(); return; }
+                if (r - 1 < kits.size() && safe->ctx.proc.loadKitFolder (kits[r - 1]))
+                {
+                    safe->ctx.proc.undoCommit();
+                    safe->status = juce::String::fromUTF8 ("Kit \xc2\xab ") + kits[r - 1].getFileName() + juce::String::fromUTF8 (" \xc2\xbb charg\xc3\xa9.");
+                    if (safe->onLaneLoaded) safe->onLaneLoaded (-1);
+                    safe->repaint();
+                }
+            });
         }
 
         void mouseDown (const juce::MouseEvent& e) override
@@ -266,7 +326,8 @@ namespace tui
         Ctx& ctx;
         Model machineModel, soundModel;
         juce::ListBox machineList, soundList;
-        Pill chooseBtn, rescanBtn, kitBtn;
+        Pill chooseBtn, rescanBtn, kitBtn, saveKitBtn, myKitsBtn;
+        std::unique_ptr<juce::AlertWindow> nameWin;
         juce::OwnedArray<Pill> laneBtns;
         std::unique_ptr<juce::FileChooser> chooser;
         int selMachine = 0, selSound = -1, selVariant = 0;

@@ -295,6 +295,14 @@ int main (int argc, char** argv)
             p.previewSound (*kick, 2);
             auto r4 = run (p, h, 0.3);
             CHECK (r4.finite, "écoute d'un son de la bibliothèque");
+            // Mes kits : enregistrer les 8 pistes, les recharger ailleurs
+            const auto lbl4 = p.laneSource (4);
+            auto kf = p.saveUserKit ("Test Harness Kit");
+            CHECK (kf.getChildFile ("kit.xml").existsAsFile(), "Mes kits : kit enregistré (%s)", kf.getFullPathName().toRawUTF8());
+            TyphonProcessor k2;
+            CHECK (k2.loadKitFolder (kf) && k2.laneVariants (0) == 5 && k2.laneSource (0) == p.laneSource (0) && k2.laneSource (4) == lbl4,
+                   "Mes kits : rechargé avec variantes et noms des pistes (%s / %s)", k2.laneSource (0).toRawUTF8(), k2.laneSource (4).toRawUTF8());
+            kf.deleteRecursively();
         }
     }
 
