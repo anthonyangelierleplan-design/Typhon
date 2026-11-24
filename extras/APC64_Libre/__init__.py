@@ -119,9 +119,21 @@ def parameter_from_path(song, path):
 
 
 class APC64Libre(_OfficialAPC64):
+    _user_paths = None
+    _shift_held = False
+    _clear_held = False
 
     def setup(self):
         super().setup()
+        # nos ajouts ne doivent jamais empêcher l'APC64 de démarrer : en cas d'erreur, script officiel seul
+        try:
+            self._setup_user_mode()
+        except Exception as e:
+            import traceback
+            self.log_message("APC64 Libre : ERREUR au demarrage du mode USER : {}\n{}".format(e, traceback.format_exc()))
+            self.show_message("APC64 Libre : mode USER indisponible (voir Log.txt)")
+
+    def _setup_user_mode(self):
         self._user_paths = [None] * STRIPS
         self._shift_held = False
         self._clear_held = False
@@ -146,7 +158,7 @@ class APC64Libre(_OfficialAPC64):
             self._tasks.add(task.sequence(task.wait(0.05), task.run(self._connect_user_strips)))
 
     def _connect_user_strips(self):
-        if not self._user_mode():
+        if not self._user_paths or not self._user_mode():
             return
         song = self.song
         names = []
@@ -185,7 +197,7 @@ class APC64Libre(_OfficialAPC64):
 
     @listens_group("value")
     def _on_strip_touched(self, value, element):
-        if value == 0 or not self._user_mode():
+        if value == 0 or not self._user_paths or not self._user_mode():
             return
         i = _index_of(self.elements.touch_elements_raw, element)
         shift = self._held(self.elements.shift_button, self._shift_held)
