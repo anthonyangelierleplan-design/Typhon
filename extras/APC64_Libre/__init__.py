@@ -11,6 +11,7 @@ from __future__ import absolute_import, print_function, unicode_literals
 import Live
 from ableton.v3.base import listens, listens_group, task
 from ableton.v3.live import liveobj_valid
+import APC64 as _official
 from APC64 import APC64 as _OfficialAPC64, get_capabilities as _official_capabilities
 
 STRIPS = 8
@@ -22,6 +23,13 @@ def get_capabilities():
 
 
 def create_instance(c_instance):
+    # selon la version de Live, la spécification se passe à la création (Live 12 récent) ou est fixée dans la classe
+    spec = getattr(_official, "Specification", None)
+    if spec is not None:
+        try:
+            return APC64Libre(specification=spec, c_instance=c_instance)
+        except TypeError:
+            pass
     return APC64Libre(c_instance=c_instance)
 
 
