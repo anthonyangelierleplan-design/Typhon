@@ -1,0 +1,26 @@
+APC64 Libre — touch strips assignables dans Ableton (comme le mode User de l'APC40)
+=============================================================================
+
+Installation (Windows, Ableton Live 12)
+1. Ferme Ableton.
+2. Copie le dossier « APC64_Libre » dans :
+   Documents\Ableton\User Library\Remote Scripts\
+   (crée le dossier « Remote Scripts » s'il n'existe pas)
+3. Ouvre Ableton > Préférences > Link, Tempo & MIDI :
+   - Surface de contrôle : choisis « APC64_Libre » à la place de « APC64 »,
+     entrée et sortie = APC64.
+   - Dans la liste des ports, sur l'entrée APC64 : active « Télécommande » (Remote).
+     Sur la sortie APC64 : active aussi « Télécommande » (pour que la LED suive la valeur).
+
+Utilisation
+- Tout fonctionne comme avant (Session, Note, Device, Volume, Pan, Sends...).
+- Appuie sur le bouton OFF des touch strips : les 8 strips sont libres.
+- Ctrl+M dans Ableton, clique un réglage, touche un strip : c'est assigné.
+  Ctrl+M à nouveau pour sortir. Les assignations sont gardées avec le projet.
+- Repasse en Device / Volume / Pan... : les strips reprennent leur rôle normal.
+  Rappuie sur OFF : tes assignations reviennent.
+
+Revenir en arrière : remets « APC64 » comme surface de contrôle (ou supprime le dossier).
+
+Avec Typhon : si Typhon pilote l'APC64 (Paramètres > Akai APC64 > On), la surface de
+contrôle doit être sur « Aucun ». APC64 Libre, c'est pour le reste du temps.
