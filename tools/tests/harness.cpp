@@ -199,6 +199,35 @@ int main (int argc, char** argv)
         CHECK (r2.finite && r2.peak < r1.peak, "master : compression à fond (pic %.2f -> %.2f)", r1.peak, r2.peak);
     }
 
+    // --- 1c) durée limitée au pas, annuler / rétablir ------------------------
+    {
+        auto crashLen = [] (bool limit, int len)
+        {
+            TyphonProcessor q; FakeHead hq; q.setPlayHead (&hq); q.pattern.clear();
+            if (limit) setParam (q, typhon::pid (6, "steplen"), 1.0f);
+            q.prepareToPlay (48000.0, 512);
+            typhon::Step c; c.vel = 110; c.len = len; q.pattern.set (6, 0, c);
+            hq.ppq = 3.999; int64_t n = 0;
+            juce::AudioBuffer<float> buf (2, 512);
+            for (int i = 0; i < 175; ++i) { juce::MidiBuffer mb; q.processBlock (buf, mb); hq.ppq += 512.0 / 48000.0 * 2.0; if (buf.getMagnitude (0, 512) > 1.0e-4f) n += 512; }
+            return n / 48000.0;
+        };
+        const double free1 = crashLen (false, 1), lim1 = crashLen (true, 1), lim3 = crashLen (true, 3);
+        CHECK (free1 > 1.5 && lim1 < 0.16 && lim3 > 0.33 && lim3 < 0.42, "durée = pas : crash libre %.2f s, limité à 1 pas %.3f s, à 3 pas fusionnés %.3f s", free1, lim1, lim3);
+
+        TyphonProcessor u;
+        typhon::Step s1; s1.vel = 100;
+        u.pattern.set (2, 3, s1); u.undoCommit();
+        setParam (u, typhon::pid (2, "pitch"), 5.0f); u.undoCommit();
+        u.pattern.set (2, 4, s1); u.undoCommit();
+        u.undo();
+        CHECK (! u.pattern.get (2, 4).on() && std::fabs (u.apvts.getRawParameterValue (typhon::pid (2, "pitch"))->load() - 5.0f) < 0.01f, "annuler : le dernier pas disparaît, le pitch reste");
+        u.undo();
+        CHECK (std::fabs (u.apvts.getRawParameterValue (typhon::pid (2, "pitch"))->load()) < 0.01f && u.pattern.get (2, 3).on(), "annuler x2 : le pitch revient à 0");
+        u.redo(); u.redo();
+        CHECK (u.pattern.get (2, 4).on() && ! u.canRedo(), "rétablir x2 : tout revient");
+    }
+
     // --- 2) état du projet ---------------------------------------------------
     {
         TyphonProcessor a;

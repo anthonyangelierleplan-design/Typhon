@@ -137,6 +137,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout TyphonProcessor::createLayou
         grp->addChild (f (pid (i, "gdur"), n + juce::String::fromUTF8 ("Grain dur\xc3\xa9" "e"), 30.0f, 4000.0f, 600.0f, 600.0f));
         grp->addChild (f (pid (i, "grev"), n + juce::String::fromUTF8 ("Grains invers\xc3\xa9s"), 0.0f, 1.0f, 0.0f));
         grp->addChild (std::make_unique<AudioParameterBool> (ParameterID { pid (i, "gfreeze"), 1 }, n + "Grain freeze", false));
+        grp->addChild (std::make_unique<AudioParameterBool> (ParameterID { pid (i, "steplen"), 1 }, n + juce::String::fromUTF8 ("Dur\xc3\xa9" "e limit\xc3\xa9" "e au pas"), false));
         L.add (std::move (grp));
     }
     L.add (f ("swing", "Swing", 0.5f, 0.75f, 0.5f));
@@ -194,7 +195,7 @@ TyphonProcessor::TyphonProcessor()
         lp[i] = { P ("vol"), P ("pan"), P ("pitch"), P ("start"), P ("end"), P ("decay"), P ("choke"), P ("group"), P ("fade"), P ("vsens"),
                   P ("out"), P ("rev"), P ("tatt"), P ("tsus"), P ("dmode"), P ("dthr"), P ("dratio"), P ("datt"), P ("drel"), P ("dmix"), P ("mute"), P ("gate"),
                   P ("fcut"), P ("fres"), P ("ftype"), P ("sendA"), P ("sendB"), P ("duck"),
-                  P ("gran"), P ("gpos"), P ("gsize"), P ("gdens"), P ("gspray"), P ("gpitch"), P ("gprand"), P ("gstereo"), P ("gspeed"), P ("gdur"), P ("grev"), P ("gfreeze") };
+                  P ("gran"), P ("gpos"), P ("gsize"), P ("gdens"), P ("gspray"), P ("gpitch"), P ("gprand"), P ("gstereo"), P ("gspeed"), P ("gdur"), P ("grev"), P ("gfreeze"), P ("steplen") };
         meters[i].store (0.0f);
         hitCounter[i].store (0);
         captureNotes[i].store (captureNoteDefault[i]);
@@ -227,6 +228,7 @@ TyphonProcessor::TyphonProcessor()
     put (4, { 0, 2, 4, 6, 8, 10, 12, 14 }, 90);
 
     captureEngine = std::make_unique<CaptureEngine> (*this);
+    stable = takeSnapshot();
     startTimerHz (4);
 }
 
@@ -589,7 +591,17 @@ void TyphonProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
                     {
                         const double t = stepPpq + (swingOffset (st, swing) + h.at[k]) * 0.25;
                         if (t < p0 || t >= p1) continue;
-                        const int64_t gate = (! fromFill && s.len > 1) ? (int64_t) ((s.len * 0.25 - h.at[k] * 0.25) / ppqPerSample) : -1;
+                        // durée : liaison = jusqu'au bout des pas fusionnés ; option « durée limitée au pas » = le son s'arrête à la fin de son pas
+                        // (ou de sa part de pas pour un ratchet / un pas divisé, ou de son coup de fill)
+                        int64_t gate = -1;
+                        const bool limit = lp[lane].steplen->load() > 0.5f;
+                        if (! fromFill && s.len > 1) gate = (int64_t) ((s.len * 0.25 - h.at[k] * 0.25) / ppqPerSample);
+                        else if (limit)
+                        {
+                            const double next = k + 1 < h.count ? h.at[k + 1] : 1.0;
+                            const double dur = fromFill ? (fo.grid == 0 ? 2.0 : (fo.grid == 1 ? 1.0 : (fo.grid == 2 ? 0.5 : 2.0 / 3.0))) : (next - h.at[k]);
+                            gate = std::max<int64_t> (16, (int64_t) (dur * 0.25 / ppqPerSample));
+                        }
                         addEv ((int) ((t - p0) / ppqPerSample), lane, h.vel[k], fromFill ? 0 : s.choke, gate,
                                fromFill ? -1 : st, fromFill ? 0 : s.pitch, ! fromFill && s.rev);
                     }
@@ -943,6 +955,91 @@ void TyphonProcessor::setStateInformation (const void* data, int sizeInBytes)
         const juce::ScopedLock sl (srcLock);
         kitName = src->getStringAttribute ("kitName", kitName);
     }
+    undoStack.clear(); redoStack.clear();
+    stable = takeSnapshot();
+}
+
+// ============================================================================
+//  Annuler / rétablir
+// ============================================================================
+bool TyphonProcessor::Snapshot::operator== (const Snapshot& o) const
+{
+    if (steps != o.steps || params != o.params || locks.size() != o.locks.size()) return false;
+    for (size_t i = 0; i < locks.size(); ++i)
+    {
+        const bool an = std::isnan (locks[i]), bn = std::isnan (o.locks[i]);
+        if (an != bn || (! an && locks[i] != o.locks[i])) return false;
+    }
+    return true;
+}
+
+TyphonProcessor::Snapshot TyphonProcessor::takeSnapshot() const
+{
+    Snapshot s;
+    s.steps.reserve ((size_t) numLanes * numSteps);
+    s.locks.reserve ((size_t) numLanes * numSteps * numLocks);
+    for (int l = 0; l < numLanes; ++l)
+        for (int st = 0; st < numSteps; ++st)
+        {
+            s.steps.push_back (pattern.steps[l][st].load());
+            for (int k = 0; k < numLocks; ++k) s.locks.push_back (pattern.lock (l, st, k));
+        }
+    for (auto* p : getParameters())
+        if (auto* rp = dynamic_cast<juce::RangedAudioParameter*> (p))
+            s.params.push_back (rp->getParameterID() == "fill" ? 0.0f : rp->getValue());
+    return s;
+}
+
+void TyphonProcessor::applySnapshot (const Snapshot& s)
+{
+    size_t i = 0, j = 0;
+    for (int l = 0; l < numLanes; ++l)
+        for (int st = 0; st < numSteps; ++st)
+        {
+            if (i < s.steps.size()) pattern.steps[l][st].store (s.steps[i++]);
+            for (int k = 0; k < numLocks; ++k) if (j < s.locks.size()) pattern.setLock (l, st, k, s.locks[j++]);
+        }
+    size_t p = 0;
+    for (auto* prm : getParameters())
+        if (auto* rp = dynamic_cast<juce::RangedAudioParameter*> (prm))
+        {
+            if (p < s.params.size() && rp->getParameterID() != "fill" && rp->getValue() != s.params[p])
+            {
+                rp->beginChangeGesture(); rp->setValueNotifyingHost (s.params[p]); rp->endChangeGesture();
+            }
+            ++p;
+        }
+}
+
+void TyphonProcessor::undoCommit()
+{
+    auto now = takeSnapshot();
+    if (stable.steps.empty()) { stable = std::move (now); return; }
+    if (now == stable) return;
+    undoStack.push_back (std::move (stable));
+    if (undoStack.size() > 200) undoStack.erase (undoStack.begin());
+    redoStack.clear();
+    stable = std::move (now);
+}
+
+bool TyphonProcessor::undo()
+{
+    undoCommit();
+    if (undoStack.empty()) return false;
+    redoStack.push_back (stable);
+    stable = undoStack.back(); undoStack.pop_back();
+    applySnapshot (stable);
+    return true;
+}
+
+bool TyphonProcessor::redo()
+{
+    undoCommit();
+    if (redoStack.empty()) return false;
+    undoStack.push_back (stable);
+    stable = redoStack.back(); redoStack.pop_back();
+    applySnapshot (stable);
+    return true;
 }
 
 juce::AudioProcessorEditor* TyphonProcessor::createEditor() { return new TyphonEditor (*this); }

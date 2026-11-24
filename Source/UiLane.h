@@ -413,7 +413,7 @@ namespace tui
         std::function<void()> onOpenEditor, onLockEnded;
 
         LanePanel (Ctx& c) : wave (c), ctx (c), dyn (c),
-            chokeBtn (c, "CHOKE", true), revBtn (c, "REVERSE", true), gateBtn (c, "GATE MIDI", true), muteBtn (c, "MUTE", true),
+            chokeBtn (c, "CHOKE", true), revBtn (c, "REVERSE", true), gateBtn (c, "GATE MIDI", true), muteBtn (c, "MUTE", true), stepLenBtn (c, juce::String::fromUTF8 ("DUR\xc3\x89" "E = PAS"), true),
             loadBtn (c, "CHARGER..."), bigBtn (c, juce::String::fromUTF8 ("\xe2\xa4\xa2 AGRANDIR")),
             granOn (c, "GRANULAIRE ON", true), freezeBtn (c, "FREEZE", true),
             sliceGo (c, juce::String::fromUTF8 ("R\xc3\x89PARTIR SUR LES PISTES")), slicePat (c, juce::String::fromUTF8 ("R\xc3\x89PARTIR + PATTERN")),
@@ -453,7 +453,8 @@ namespace tui
             addAndMakeVisible (wave);
             wave.onDoubleClick = [this] { if (onOpenEditor) onOpenEditor(); };
             addChildComponent (dyn);
-            for (auto* b : { &chokeBtn, &revBtn, &gateBtn, &muteBtn, &granOn, &freezeBtn }) { addAndMakeVisible (*b); b->setClickingTogglesState (true); b->textSize = 11.0f; }
+            for (auto* b : { &chokeBtn, &revBtn, &gateBtn, &muteBtn, &stepLenBtn, &granOn, &freezeBtn }) { addAndMakeVisible (*b); b->setClickingTogglesState (true); b->textSize = 10.0f; }
+            stepLenBtn.setTooltip (juce::String::fromUTF8 ("Le son s'arr\xc3\xaate \xc3\xa0 la fin de son pas (ou des pas fusionn\xc3\xa9s). \xc3\x89teint : il joue comme r\xc3\xa9gl\xc3\xa9."));
             for (auto* b : { &loadBtn, &bigBtn, &sliceGo, &slicePat, &lockDone, &lockClear }) { addAndMakeVisible (*b); b->textSize = 11.0f; }
             loadBtn.onClick = [this] { chooseFile(); };
             bigBtn.onClick = [this] { if (onOpenEditor) onOpenEditor(); };
@@ -499,7 +500,7 @@ namespace tui
             auto& ap = ctx.proc.apvts;
             btnAtts.clear(); boxAtts.clear();
             auto bt = [&] (const char* w, juce::Button& b) { btnAtts.add (new juce::AudioProcessorValueTreeState::ButtonAttachment (ap, pid (l, w), b)); };
-            bt ("choke", chokeBtn); bt ("rev", revBtn); bt ("gate", gateBtn); bt ("mute", muteBtn); bt ("gran", granOn); bt ("gfreeze", freezeBtn);
+            bt ("choke", chokeBtn); bt ("rev", revBtn); bt ("gate", gateBtn); bt ("mute", muteBtn); bt ("steplen", stepLenBtn); bt ("gran", granOn); bt ("gfreeze", freezeBtn);
             groupBox.clear (juce::dontSendNotification);
             groupBox.addItemList ({ "Groupe : aucun", "Groupe A", "Groupe B", "Groupe C", "Groupe D" }, 1);
             outBox.clear (juce::dontSendNotification);
@@ -530,7 +531,7 @@ namespace tui
             tab = t;
             for (auto* k : sampleKnobs) k->setVisible (t == 0);
             for (auto* k : grainKnobs) k->setVisible (t == 1);
-            for (juce::Component* c : { (juce::Component*) &chokeBtn, (juce::Component*) &revBtn, (juce::Component*) &gateBtn, (juce::Component*) &muteBtn,
+            for (juce::Component* c : { (juce::Component*) &chokeBtn, (juce::Component*) &revBtn, (juce::Component*) &gateBtn, (juce::Component*) &muteBtn, (juce::Component*) &stepLenBtn,
                                         (juce::Component*) &groupBox, (juce::Component*) &outBox, (juce::Component*) &ftypeBox, (juce::Component*) &loadBtn })
                 c->setVisible (t == 0);
             wave.setVisible (t != 3);
@@ -617,8 +618,8 @@ namespace tui
                 for (int i = 0; i < 12; ++i) sampleKnobs[i]->setBounds (grid.getX() + (i % 4) * cw, grid.getY() + (i / 4) * 80, cw, 80);
                 r.removeFromTop (6);
                 auto row = r.removeFromTop (28);
-                const int bw = (row.getWidth() - 18) / 4;
-                for (auto* b : { &chokeBtn, &revBtn, &gateBtn, &muteBtn }) { b->setBounds (row.removeFromLeft (bw)); row.removeFromLeft (6); }
+                const int bw = (row.getWidth() - 16) / 5;
+                for (auto* b : { &chokeBtn, &revBtn, &gateBtn, &muteBtn, &stepLenBtn }) { b->setBounds (row.removeFromLeft (bw)); row.removeFromLeft (4); }
                 r.removeFromTop (6);
                 auto row2 = r.removeFromTop (28);
                 const int w4 = (row2.getWidth() - 18) / 4;
@@ -736,7 +737,7 @@ namespace tui
         int tab = 0, lockStep = -1, maxSlices = 8;
         DynBlock dyn;
         juce::OwnedArray<Pill> tabs, sliceCount;
-        Pill chokeBtn, revBtn, gateBtn, muteBtn, loadBtn, bigBtn, granOn, freezeBtn, sliceGo, slicePat, lockDone, lockClear;
+        Pill chokeBtn, revBtn, gateBtn, muteBtn, stepLenBtn, loadBtn, bigBtn, granOn, freezeBtn, sliceGo, slicePat, lockDone, lockClear;
         juce::ComboBox groupBox, outBox, ftypeBox;
         juce::Slider sliceSens;
         juce::OwnedArray<Knob> sampleKnobs, grainKnobs;

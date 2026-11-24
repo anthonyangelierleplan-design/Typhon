@@ -425,6 +425,9 @@ namespace tui
             m.addSeparator();
             m.addItem (4, "Mute", true, muted);
             m.addItem (9, juce::String::fromUTF8 ("Reverse (toute la piste)"), true, ap.getRawParameterValue (pid (lane, "rev"))->load() > 0.5f);
+            m.addItem (10, juce::String::fromUTF8 ("Dur\xc3\xa9" "e limit\xc3\xa9" "e au pas"), true, ap.getRawParameterValue (pid (lane, "steplen"))->load() > 0.5f);
+            m.addItem (11, juce::String::fromUTF8 ("Dur\xc3\xa9" "e limit\xc3\xa9" "e au pas : toutes les pistes"));
+            m.addItem (12, juce::String::fromUTF8 ("Dur\xc3\xa9" "e libre : toutes les pistes"));
             m.addItem (5, juce::String::fromUTF8 ("Gate MIDI (la dur\xc3\xa9" "e de la note coupe le son)"), true, gate);
             m.addSeparator();
             m.addItem (6, "Effacer la piste");
@@ -457,6 +460,11 @@ namespace tui
                         case 4: toggle ("mute"); break;
                         case 5: toggle ("gate"); break;
                         case 9: toggle ("rev"); break;
+                        case 10: toggle ("steplen"); break;
+                        case 11: case 12:
+                            for (int o = 0; o < numLanes; ++o)
+                                if (auto* prm = P.apvts.getParameter (pid (o, "steplen"))) prm->setValueNotifyingHost (r == 11 ? 1.0f : 0.0f);
+                            break;
                         case 6: for (int j = 0; j < numSteps; ++j) { P.pattern.set (lane, j, Step()); P.pattern.clearLocks (lane, j); } break;
                         case 7: safe->clip.clear(); for (int j = 0; j < numSteps; ++j) safe->clip.push_back (P.pattern.steps[lane][j].load()); break;
                         case 8: for (int j = 0; j < numSteps && j < (int) safe->clip.size(); ++j) P.pattern.steps[lane][j].store (safe->clip[(size_t) j]); break;

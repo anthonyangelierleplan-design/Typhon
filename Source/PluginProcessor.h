@@ -89,6 +89,13 @@ public:
     void setCaptureNote (int lane, int note) { captureNotes[lane].store (juce::jlimit (0, 127, note)); }
 
     static juce::File libraryFolder();
+
+    // --- Annuler / rétablir (pattern, verrous et réglages ; pas les samples chargés) ---
+    void undoCommit();          // enregistre l'état courant s'il a changé depuis la dernière étape
+    bool undo();
+    bool redo();
+    bool canUndo() const { return ! undoStack.empty(); }
+    bool canRedo() const { return ! redoStack.empty(); }
     static constexpr int cutAllNote = 24;   // C0 : coupe tous les sons
 
 private:
@@ -142,7 +149,7 @@ private:
         std::atomic<float> *vol, *pan, *pitch, *start, *end, *decay, *choke, *group, *fade, *vsens,
                            *out, *rev, *tatt, *tsus, *dmode, *dthr, *dratio, *datt, *drel, *dmix, *mute, *gate,
                            *fcut, *fres, *ftype, *sendA, *sendB, *duck,
-                           *gran, *gpos, *gsize, *gdens, *gspray, *gpitch, *gprand, *gstereo, *gspeed, *gdur, *grev, *gfreeze;
+                           *gran, *gpos, *gsize, *gdens, *gspray, *gpitch, *gprand, *gstereo, *gspeed, *gdur, *grev, *gfreeze, *steplen;
     } lp[typhon::numLanes];
     std::atomic<float> *pSwing, *pSpAmt, *pSpBits, *pSpRate, *pSpFilt, *pMaster, *pFill, *pFillAuto, *pFillInt, *pChokeAll,
                        *pSeqLen, *pFillLen, *pFillGrid, *pFillOthers, *pFillCrash, *pFillLane[typhon::numLanes],
@@ -161,6 +168,17 @@ private:
     int64_t lastBarIndex = -1;
 
     std::unique_ptr<CaptureEngine> captureEngine;
+
+    struct Snapshot
+    {
+        std::vector<uint32_t> steps;
+        std::vector<float> locks, params;
+        bool operator== (const Snapshot& o) const;
+    };
+    Snapshot takeSnapshot() const;
+    void applySnapshot (const Snapshot&);
+    std::vector<Snapshot> undoStack, redoStack;
+    Snapshot stable;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TyphonProcessor)
 };

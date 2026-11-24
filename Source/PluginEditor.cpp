@@ -87,7 +87,7 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
     Ui (TyphonProcessor& p)
         : ctx { p }, look (ctx), grid (ctx), lane (ctx), capture (ctx), settingsPage (ctx), mixPage (ctx), editor (ctx),
           tabSeq (ctx, juce::String::fromUTF8 ("S\xc3\x89QUENCEUR")), tabCap (ctx, "CAPTURE"), tabMix (ctx, "MIX"), fillSet (ctx, juce::String::fromUTF8 ("R\xc3\x89GLAGES FILL")),
-          chokeAllBtn (ctx, "CHOKE GLOBAL"), settingsBtn (ctx, juce::String::fromUTF8 ("PARAM\xc3\x88TRES")),
+          chokeAllBtn (ctx, "CHOKE GLOBAL"), undoBtn (ctx, juce::String::fromUTF8 ("\xe2\x86\xb6")), redoBtn (ctx, juce::String::fromUTF8 ("\xe2\x86\xb7")), settingsBtn (ctx, juce::String::fromUTF8 ("PARAM\xc3\x88TRES")),
           dragBtn (ctx), fillBtn (ctx)
     {
         setLookAndFeel (&look);
@@ -99,6 +99,12 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
         addChildComponent (editor);
         for (auto* b : { &tabSeq, &tabCap, &tabMix, &settingsBtn, &chokeAllBtn }) { addAndMakeVisible (*b); b->textSize = 13.0f; }
         tabMix.isOn = [this] { return page == 3; };
+        for (auto* b : { &undoBtn, &redoBtn }) { addAndMakeVisible (*b); b->textSize = 20.0f; }
+        undoBtn.setTooltip ("Annuler (Ctrl+Z)"); redoBtn.setTooltip (juce::String::fromUTF8 ("R\xc3\xa9tablir (Ctrl+Y)"));
+        undoBtn.onClick = [this] { doUndo (false); };
+        redoBtn.onClick = [this] { doUndo (true); };
+        setWantsKeyboardFocus (true);
+        addMouseListener (this, true);
         tabMix.onClick = [this] { setPage (3); };
         addAndMakeVisible (fillSet); fillSet.textSize = 10.0f;
         fillSet.onClick = [this]
@@ -173,6 +179,38 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
         setLookAndFeel (nullptr);
     }
 
+    // --- annuler / rétablir ----------------------------------------------------
+    void doUndo (bool redo)
+    {
+        const bool ok = redo ? ctx.proc.redo() : ctx.proc.undo();
+        if (! ok) return;
+        lane.setLane (lane.lane);
+        if (editorOpen) editor.setLane (lane.lane);
+        repaint();
+        grid.repaint();
+    }
+    bool keyPressed (const juce::KeyPress& k) override
+    {
+        const auto m = k.getModifiers();
+        if (! m.isCommandDown()) return false;
+        const int c = k.getKeyCode();
+        if ((c == 'Z' || c == 'z') && ! m.isShiftDown()) { doUndo (false); return true; }
+        if (c == 'Y' || c == 'y' || ((c == 'Z' || c == 'z') && m.isShiftDown())) { doUndo (true); return true; }
+        return false;
+    }
+    // chaque action à la souris (et les menus qui suivent) devient une étape d'annulation
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        uiActiveUntil = juce::Time::getMillisecondCounter() + 4000;
+        if (dynamic_cast<juce::TextEditor*> (e.eventComponent) == nullptr) grabKeyboardFocus();
+    }
+    void mouseUp (const juce::MouseEvent&) override
+    {
+        uiActiveUntil = juce::Time::getMillisecondCounter() + 4000;
+        juce::Component::SafePointer<Ui> safe (this);
+        juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->ctx.proc.undoCommit(); });
+    }
+
     void setPage (int pg)
     {
         page = pg;
@@ -202,6 +240,10 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
 
     void timerCallback() override
     {
+        if (++undoTick % 10 == 0 && juce::Time::getMillisecondCounter() < uiActiveUntil && ! juce::ModifierKeys::currentModifiers.isAnyMouseButtonDown())
+            ctx.proc.undoCommit();
+        undoBtn.setEnabled (ctx.proc.canUndo() || juce::Time::getMillisecondCounter() < uiActiveUntil);
+        redoBtn.setEnabled (ctx.proc.canRedo());
         if (page == 0) { if (editorOpen) editor.tick(); else { grid.tick(); lane.tick(); } fillBtn.repaint(); }
         else if (page == 1) capture.tick();
         else if (page == 3) mixPage.tick();
@@ -278,9 +320,11 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
         tabSeq.setBounds (268, 16, 150, 40);
         tabCap.setBounds (424, 16, 116, 40);
         tabMix.setBounds (546, 16, 80, 40);
-        settingsBtn.setBounds (baseW - 24 - 140, 18, 140, 36);
-        chokeAllBtn.setBounds (settingsBtn.getX() - 10 - 140, 18, 140, 36);
-        lcdArea = { 640, 14, chokeAllBtn.getX() - 16 - 640, 44 };
+        settingsBtn.setBounds (baseW - 24 - 118, 18, 118, 36);
+        chokeAllBtn.setBounds (settingsBtn.getX() - 8 - 122, 18, 122, 36);
+        redoBtn.setBounds (chokeAllBtn.getX() - 10 - 44, 18, 44, 36);
+        undoBtn.setBounds (redoBtn.getX() - 6 - 44, 18, 44, 36);
+        lcdArea = { 640, 14, undoBtn.getX() - 12 - 640, 44 };
 
         auto body = juce::Rectangle<int> (0, headerH, baseW, baseH - headerH);
         capture.setBounds (body);
@@ -326,7 +370,10 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
     SettingsPage settingsPage;
     MixPage mixPage;
     SampleEditor editor;
-    Pill tabSeq, tabCap, tabMix, fillSet, chokeAllBtn, settingsBtn;
+    Pill tabSeq, tabCap, tabMix, fillSet, chokeAllBtn, undoBtn, redoBtn, settingsBtn;
+    juce::uint32 uiActiveUntil = 0;
+    int undoTick = 0;
+    juce::TooltipWindow tooltips { this, 600 };
     bool editorOpen = false;
     DragMidiButton dragBtn;
     FillButton fillBtn;
