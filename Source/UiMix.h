@@ -163,6 +163,9 @@ namespace tui
             lenBox.addItemList ({ "1 temps", "2 temps", "1 mesure" }, 1);
             gridBox.addItemList ({ "1/8", "1/16", "1/32", "1/16 triolet" }, 1);
             othersBox.addItemList ({ "Gardent leur pattern", "Se taisent" }, 1);
+            srcBox.addItemList ({ juce::String::fromUTF8 ("G\xc3\xa9n\xc3\xa9r\xc3\xa9 (roulement)"), juce::String::fromUTF8 ("Pattern FILL (\xc3\xa9" "crit)") }, 1);
+            boxAtts.add (new juce::AudioProcessorValueTreeState::ComboBoxAttachment (ap, "fill_src", srcBox));
+            addAndMakeVisible (srcBox);
             boxAtts.add (new juce::AudioProcessorValueTreeState::ComboBoxAttachment (ap, "fill_len", lenBox));
             boxAtts.add (new juce::AudioProcessorValueTreeState::ComboBoxAttachment (ap, "fill_grid", gridBox));
             boxAtts.add (new juce::AudioProcessorValueTreeState::ComboBoxAttachment (ap, "fill_others", othersBox));
@@ -183,6 +186,9 @@ namespace tui
             g.drawText ("Longueur", 16, 150, 120, 18, juce::Justification::centredLeft);
             g.drawText ("Grille", 146, 150, 120, 18, juce::Justification::centredLeft);
             g.drawText ("Les autres pistes", 276, 150, 140, 18, juce::Justification::centredLeft);
+            g.drawText ("Source du fill", 196, 202, 200, 18, juce::Justification::centredLeft);
+            g.setFont (font (11.0f));
+            g.drawFittedText (juce::String::fromUTF8 ("Pattern FILL : choisis FILL en haut de la grille, \xc3\xa9" "cris ton fill, reviens sur A..H."), 16, 262, 400, 30, juce::Justification::topLeft, 2);
         }
         void resized() override
         {
@@ -192,11 +198,12 @@ namespace tui
             gridBox.setBounds (146, 170, 120, 28);
             othersBox.setBounds (276, 170, 130, 28);
             crash.setBounds (16, 220, 160, 32);
+            srcBox.setBounds (196, 222, 210, 28);
         }
     private:
         Ctx& ctx;
         juce::OwnedArray<Pill> lanes;
-        juce::ComboBox lenBox, gridBox, othersBox;
+        juce::ComboBox lenBox, gridBox, othersBox, srcBox;
         Pill crash;
         juce::OwnedArray<juce::AudioProcessorValueTreeState::ButtonAttachment> atts;
         juce::OwnedArray<juce::AudioProcessorValueTreeState::ComboBoxAttachment> boxAtts;

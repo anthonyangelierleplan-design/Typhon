@@ -430,23 +430,226 @@ namespace tui
     };
 
     // ------------------------------------------------------------------------
+    //  Barre de valeur (glisser horizontalement, double-clic = valeur par défaut)
+    // ------------------------------------------------------------------------
+    class ValueBar : public juce::Component
+    {
+    public:
+        ValueBar (Ctx& c) : ctx (c) {}
+        std::function<int()> get;
+        std::function<void (int)> set;
+        std::function<juce::String (int)> format;
+        int minV = 0, maxV = 100, defV = 0;
+        bool bipolar = false;
+        void paint (juce::Graphics& g) override
+        {
+            const auto& t = ctx.th();
+            auto r = getLocalBounds().toFloat();
+            const bool en = isEnabled() && get;
+            const int v = en ? get() : defV;
+            auto track = r.withTrimmedRight (70.0f).withSizeKeepingCentre (r.getWidth() - 70.0f, 10.0f);
+            g.setColour (t.bg); g.fillRoundedRectangle (track, 5.0f);
+            const float f0 = bipolar ? (float) (0 - minV) / (float) (maxV - minV) : 0.0f;
+            const float f1 = (float) (v - minV) / (float) std::max (1, maxV - minV);
+            auto fill = track.withX (track.getX() + track.getWidth() * std::min (f0, f1)).withWidth (track.getWidth() * std::fabs (f1 - f0));
+            g.setColour (en ? t.acc : t.sub.withAlpha (0.3f)); g.fillRoundedRectangle (fill.withWidth (std::max (fill.getWidth(), 3.0f)), 5.0f);
+            g.setColour (en ? valueColour (t) : t.sub); g.setFont (mono (13.0f));
+            g.drawText (format ? format (v) : juce::String (v), r.removeFromRight (64.0f), juce::Justification::centredRight);
+        }
+        void mouseDown (const juce::MouseEvent& e) override { setFromX (e.x); }
+        void mouseDrag (const juce::MouseEvent& e) override { setFromX (e.x); }
+        void mouseDoubleClick (const juce::MouseEvent&) override { if (set) set (defV); repaint(); }
+    private:
+        void setFromX (int x)
+        {
+            if (! set || ! isEnabled()) return;
+            const float w = (float) getWidth() - 70.0f;
+            const float f = juce::jlimit (0.0f, 1.0f, (float) x / std::max (1.0f, w));
+            set (minV + juce::roundToInt (f * (float) (maxV - minV)));
+            repaint();
+        }
+        Ctx& ctx;
+    };
+
+    // ------------------------------------------------------------------------
+    //  Onglet PAS : tout le réglage du pas choisi (clic droit sur un pas)
+    // ------------------------------------------------------------------------
+    class StepInspector : public juce::Component
+    {
+    public:
+        explicit StepInspector (Ctx& c) : ctx (c), velBar (c), probBar (c), nudgeBar (c), pitchBar (c), varBar (c),
+            flamBtn (c, "FLAM", true), revBtn (c, "REVERSE", true), lockBtn (c, juce::String::fromUTF8 ("R\xc3\x89GLER CE PAS (VERROUS)")), clearBtn (c, "EFFACER")
+        {
+            const char* subs[5] = { "1", "1/2", "1/3", "1/4", "DIVIS\xc3\x89" };
+            for (int k = 0; k < 5; ++k)
+            {
+                auto* b = subBtns.add (new Pill (c, juce::String::fromUTF8 (subs[k])));
+                b->textSize = 11.0f;
+                b->isOn = [this, k] { auto s = step(); return s.on() && (k == 4 ? s.split : (! s.split && s.ratchet == k + 1)); };
+                b->onClick = [this, k] { edit ([k] (typhon::Step& s) { if (k == 4) { s.split = ! s.split; s.ratchet = 1; } else { s.ratchet = k + 1; s.split = false; } }); };
+                addAndMakeVisible (b);
+            }
+            const char* durs[3] = { "PISTE", "PAS", "LIBRE" };
+            for (int k = 0; k < 3; ++k)
+            {
+                auto* b = durBtns.add (new Pill (c, durs[k]));
+                b->textSize = 11.0f;
+                b->isOn = [this, k] { auto s = step(); return s.on() && s.dur == k; };
+                b->onClick = [this, k] { edit ([k] (typhon::Step& s) { s.dur = k; }); };
+                addAndMakeVisible (b);
+            }
+            const char* chokes[3] = { "PISTE", "COUPE", "LAISSE" };
+            for (int k = 0; k < 3; ++k)
+            {
+                auto* b = chokeBtns.add (new Pill (c, chokes[k]));
+                b->textSize = 11.0f;
+                b->isOn = [this, k] { auto s = step(); return s.on() && s.choke == k; };
+                b->onClick = [this, k] { edit ([k] (typhon::Step& s) { s.choke = k; }); };
+                addAndMakeVisible (b);
+            }
+            flamBtn.isOn = [this] { return step().flam; };
+            flamBtn.onClick = [this] { edit ([] (typhon::Step& s) { s.flam = ! s.flam; }); };
+            revBtn.isOn = [this] { return step().rev; };
+            revBtn.onClick = [this] { edit ([] (typhon::Step& s) { s.rev = ! s.rev; }); };
+            for (auto* b : { &flamBtn, &revBtn, &lockBtn, &clearBtn }) { addAndMakeVisible (*b); b->textSize = 11.0f; }
+            lockBtn.onClick = [this] { if (stepIdx >= 0 && onLock) onLock (lane, stepIdx); };
+            clearBtn.onClick = [this] { if (stepIdx < 0) return; ctx.proc.pattern.set (lane, stepIdx, typhon::Step()); ctx.proc.pattern.clearLocks (lane, stepIdx); refresh(); };
+
+            auto bar = [this] (ValueBar& b, int mn, int mx, int def, std::function<int (const typhon::Step&)> g, std::function<void (typhon::Step&, int)> st, std::function<juce::String (int)> f)
+            {
+                b.minV = mn; b.maxV = mx; b.defV = def; b.format = std::move (f);
+                b.get = [this, g] { return g (step()); };
+                b.set = [this, st] (int v) { edit ([st, v] (typhon::Step& s) { st (s, v); }); };
+                addAndMakeVisible (b);
+            };
+            bar (velBar, 1, 127, 100, [] (const typhon::Step& s) { return s.on() ? s.vel : 100; }, [] (typhon::Step& s, int v) { s.vel = v; }, nullptr);
+            bar (probBar, 1, 100, 100, [] (const typhon::Step& s) { return s.prob; }, [] (typhon::Step& s, int v) { s.prob = v; }, [] (int v) { return juce::String (v) + " %"; });
+            bar (nudgeBar, -50, 50, 0, [] (const typhon::Step& s) { return s.nudge; }, [] (typhon::Step& s, int v) { s.nudge = v; },
+                 [this] (int v) { const double ms = v / 100.0 * 15000.0 / std::max (20.0, ctx.proc.hostBpm()); return (v > 0 ? "+" : "") + juce::String (juce::roundToInt (ms)) + " ms"; });
+            nudgeBar.bipolar = true;
+            bar (pitchBar, -12, 12, 0, [] (const typhon::Step& s) { return s.pitch; }, [] (typhon::Step& s, int v) { s.pitch = v; },
+                 [] (int v) { return v == 0 ? juce::String ("0 st") : (v > 0 ? "+" : "") + juce::String (v) + " st"; });
+            pitchBar.bipolar = true;
+            bar (varBar, 0, 15, 0, [] (const typhon::Step& s) { return s.var; }, [] (typhon::Step& s, int v) { s.var = v; },
+                 [] (int v) { return v == 0 ? juce::String ("PISTE") : "VAR " + juce::String (v); });
+        }
+
+        std::function<void (int, int)> onLock;
+        int lane = 0, stepIdx = -1;
+
+        void setStep (int l, int st) { lane = l; stepIdx = st; refresh(); }
+        void refresh()
+        {
+            varBar.maxV = std::max (1, std::min (15, ctx.proc.laneVariants (lane)));
+            const bool on = stepIdx >= 0 && step().on();
+            for (juce::Component* c : { (juce::Component*) &velBar, (juce::Component*) &probBar, (juce::Component*) &nudgeBar, (juce::Component*) &pitchBar,
+                                        (juce::Component*) &flamBtn, (juce::Component*) &revBtn, (juce::Component*) &clearBtn })
+                c->setEnabled (on);
+            varBar.setEnabled (on && ctx.proc.laneVariants (lane) > 1);
+            lockBtn.setEnabled (stepIdx >= 0);
+            repaint();
+            for (auto* c : getChildren()) c->repaint();
+        }
+
+        void paint (juce::Graphics& g) override
+        {
+            const auto& t = ctx.th();
+            g.setColour (t.tx); g.setFont (font (16.0f, true));
+            if (stepIdx < 0)
+            {
+                g.setColour (t.sub); g.setFont (font (13.0f));
+                g.drawFittedText (juce::String::fromUTF8 ("Clic droit sur un pas (ou allume-le) pour le r\xc3\xa9gler ici : v\xc3\xa9locit\xc3\xa9, sous-pas, flam, probabilit\xc3\xa9, d\xc3\xa9" "calage, pitch, variante, dur\xc3\xa9" "e, choke."),
+                                  getLocalBounds().reduced (0, 10), juce::Justification::topLeft, 6);
+                return;
+            }
+            const auto s = step();
+            juce::String head = "PAS " + juce::String (stepIdx + 1);
+            if (s.len > 1) head << juce::String::fromUTF8 (" \xe2\x86\x92 ") << juce::String (stepIdx + s.len);
+            if (! s.on()) head << juce::String::fromUTF8 (" \xc2\xb7 \xc3\xa9teint");
+            g.drawText (head, titleArea, juce::Justification::centredLeft);
+            g.setColour (t.sub); g.setFont (mono (11.0f));
+            const auto h = typhon::hitsOf (s);
+            g.drawText (s.on() ? juce::String (h.count) + (h.count > 1 ? " COUPS" : " COUP") : juce::String(), titleArea, juce::Justification::centredRight);
+            auto lf = font (10.5f, true); lf.setExtraKerningFactor (0.1f);
+            g.setFont (lf);
+            for (auto& l : labels) g.drawText (l.second, l.first, juce::Justification::centredLeft);
+        }
+
+        void resized() override
+        {
+            auto r = getLocalBounds();
+            titleArea = r.removeFromTop (26);
+            r.removeFromTop (4);
+            labels.clear();
+            auto row = [&] (const char* label, int h) { labels.push_back ({ r.removeFromTop (14), juce::String::fromUTF8 (label) }); auto a = r.removeFromTop (h); r.removeFromTop (7); return a; };
+            velBar.setBounds (row ("V\xc3\x89LOCIT\xc3\x89", 22));
+            {
+                auto a = row ("SOUS-PAS \xc2\xb7 FLAM", 26);
+                const int w = (a.getWidth() - 6 * 4) / 6;
+                for (auto* b : subBtns) { b->setBounds (a.removeFromLeft (b == subBtns.getLast() ? w + 14 : w - 3)); a.removeFromLeft (4); }
+                flamBtn.setBounds (a);
+            }
+            probBar.setBounds (row ("PROBABILIT\xc3\x89", 22));
+            nudgeBar.setBounds (row ("D\xc3\x89" "CALAGE HORS GRILLE", 22));
+            pitchBar.setBounds (row ("PITCH", 22));
+            varBar.setBounds (row ("VARIANTE", 22));
+            {
+                auto a = row ("DUR\xc3\x89" "E", 26);
+                const int w = (a.getWidth() - 8) / 3;
+                for (auto* b : durBtns) { b->setBounds (a.removeFromLeft (w)); a.removeFromLeft (4); }
+            }
+            {
+                auto a = row ("CHOKE \xc2\xb7 SENS", 26);
+                const int w = (a.getWidth() - 12) / 4;
+                for (auto* b : chokeBtns) { b->setBounds (a.removeFromLeft (w)); a.removeFromLeft (4); }
+                revBtn.setBounds (a);
+            }
+            auto br = r.removeFromTop (30);
+            clearBtn.setBounds (br.removeFromRight (84)); br.removeFromRight (6);
+            lockBtn.setBounds (br);
+        }
+
+    private:
+        typhon::Step step() const { return stepIdx >= 0 ? ctx.proc.pattern.get (lane, stepIdx) : typhon::Step(); }
+        void edit (std::function<void (typhon::Step&)> f)
+        {
+            if (stepIdx < 0) return;
+            auto s = ctx.proc.pattern.get (lane, stepIdx);
+            if (! s.on()) { s = typhon::Step(); s.vel = 100; }
+            f (s);
+            ctx.proc.pattern.set (lane, stepIdx, s);
+            refresh();
+            if (onEdited) onEdited();
+        }
+    public:
+        std::function<void()> onEdited;
+    private:
+        Ctx& ctx;
+        ValueBar velBar, probBar, nudgeBar, pitchBar, varBar;
+        juce::OwnedArray<Pill> subBtns, durBtns, chokeBtns;
+        Pill flamBtn, revBtn, lockBtn, clearBtn;
+        juce::Rectangle<int> titleArea;
+        std::vector<std::pair<juce::Rectangle<int>, juce::String>> labels;
+    };
+
+    // ------------------------------------------------------------------------
     class LanePanel : public juce::Component
     {
     public:
         std::function<void()> onOpenEditor, onLockEnded;
 
-        LanePanel (Ctx& c) : wave (c), ctx (c), dyn (c),
+        LanePanel (Ctx& c) : wave (c), ctx (c), dyn (c), inspector (c),
             chokeBtn (c, "CHOKE", true), revBtn (c, "REVERSE", true), gateBtn (c, "GATE MIDI", true), muteBtn (c, "MUTE", true), stepLenBtn (c, juce::String::fromUTF8 ("DUR\xc3\x89" "E = PAS"), true),
             loadBtn (c, "CHARGER..."), bigBtn (c, juce::String::fromUTF8 ("\xe2\xa4\xa2 AGRANDIR")),
             granOn (c, "GRANULAIRE ON", true), freezeBtn (c, "FREEZE", true),
             sliceGo (c, juce::String::fromUTF8 ("R\xc3\x89PARTIR SUR LES PISTES")), slicePat (c, juce::String::fromUTF8 ("R\xc3\x89PARTIR + PATTERN")),
             lockDone (c, "TERMINER"), lockClear (c, "EFFACER")
         {
-            const char* tabNames[5] = { "SAMPLE", "GRAIN", "SLICE", "STRETCH", "DYN" };
-            for (int k = 0; k < 5; ++k)
+            const char* tabNames[6] = { "SON", "GRAIN", "SLICE", "STRETCH", "DYN", "PAS" };
+            for (int k = 0; k < 6; ++k)
             {
                 auto* b = tabs.add (new Pill (c, tabNames[k]));
-                b->textSize = 10.5f;
+                b->textSize = 10.0f;
                 b->isOn = [this, k] { return tab == k; };
                 b->onClick = [this, k] { setTab (k); };
                 addAndMakeVisible (b);
@@ -476,6 +679,7 @@ namespace tui
             addAndMakeVisible (wave);
             wave.onDoubleClick = [this] { if (onOpenEditor) onOpenEditor(); };
             addChildComponent (dyn);
+            addChildComponent (inspector);
             for (auto* b : { &chokeBtn, &revBtn, &gateBtn, &muteBtn, &stepLenBtn, &granOn, &freezeBtn }) { addAndMakeVisible (*b); b->setClickingTogglesState (true); b->textSize = 10.0f; }
             stepLenBtn.setTooltip (juce::String::fromUTF8 ("Le son s'arr\xc3\xaate \xc3\xa0 la fin de son pas (ou des pas fusionn\xc3\xa9s). \xc3\x89teint : il joue comme r\xc3\xa9gl\xc3\xa9."));
             for (auto* b : { &loadBtn, &bigBtn, &sliceGo, &slicePat, &lockDone, &lockClear }) { addAndMakeVisible (*b); b->textSize = 11.0f; }
@@ -538,6 +742,7 @@ namespace tui
             using typhon::pid;
             if (lockStep >= 0 && l != lane) lockStep = -1;
             lane = l; wave.lane = l;
+            if (inspector.lane != l) inspector.setStep (l, -1);
             const char* sp[12] = { "pitch", "start", "end", "decay", "fade", "vsens", "vol", "pan", "fcut", "fres", "sendA", "sendB" };
             for (int i = 0; i < 12; ++i) sampleKnobs[i]->attach (pid (l, sp[i]));
             const char* gp[10] = { "gpos", "gsize", "gdens", "gspray", "gpitch", "gprand", "gstereo", "gspeed", "gdur", "grev" };
@@ -581,8 +786,10 @@ namespace tui
             for (juce::Component* c : { (juce::Component*) &chokeBtn, (juce::Component*) &revBtn, (juce::Component*) &gateBtn, (juce::Component*) &muteBtn, (juce::Component*) &stepLenBtn,
                                         (juce::Component*) &groupBox, (juce::Component*) &outBox, (juce::Component*) &ftypeBox, (juce::Component*) &loadBtn })
                 c->setVisible (t == 0);
-            wave.setVisible (t != 4);
-            bigBtn.setVisible (t != 4);
+            wave.setVisible (t != 4 && t != 5);
+            bigBtn.setVisible (t != 4 && t != 5);
+            inspector.setVisible (t == 5);
+            if (t == 5) inspector.refresh();
             for (auto* b : strModes) b->setVisible (t == 3);
             for (auto* b : strFits) b->setVisible (t == 3);
             strAmt.setVisible (t == 3); strWin.setVisible (t == 3);
@@ -600,6 +807,7 @@ namespace tui
         {
             wave.repaint();
             if (tab == 4) dyn.tick();
+            if (tab == 5) inspector.repaint();
             if (tab == 3) { strAmt.setAlpha ((int) param ("strfit") > 0 ? 0.45f : 1.0f); strAmt.repaint(); repaint (strInfo); }
             if (tab == 0) for (auto* k : sampleKnobs) if (k->isLocked()) k->repaint();
         }
@@ -668,9 +876,10 @@ namespace tui
             }
             r.removeFromTop (8);
             auto tb = r.removeFromTop (30);
-            const int tw = (tb.getWidth() - 24) / 5;
-            for (auto* b : tabs) { b->setBounds (tb.removeFromLeft (tw)); tb.removeFromLeft (6); }
+            const int tw = (tb.getWidth() - 25) / 6;
+            for (int k : { 5, 0, 1, 2, 3, 4 }) { tabs[k]->setBounds (tb.removeFromLeft (tw)); tb.removeFromLeft (5); }
             r.removeFromTop (8);
+            if (tab == 5) { inspector.setBounds (r); return; }
             if (tab != 4)
             {
                 auto wr = r.removeFromTop (tab == 2 ? 120 : 76);
@@ -821,6 +1030,10 @@ namespace tui
         Ctx& ctx;
         int tab = 0, lockStep = -1, maxSlices = 8;
         DynBlock dyn;
+    public:
+        StepInspector inspector;
+        void showStep (int l, int st) { if (l != lane) setLane (l); inspector.setStep (l, st); if (lockStep < 0) setTab (5); }
+    private:
         juce::OwnedArray<Pill> tabs, sliceCount;
         Pill chokeBtn, revBtn, gateBtn, muteBtn, stepLenBtn, loadBtn, bigBtn, granOn, freezeBtn, sliceGo, slicePat, lockDone, lockClear;
         juce::ComboBox groupBox, outBox, ftypeBox;

@@ -26,7 +26,7 @@ public:
         g.setColour (t.panel2); g.fillRoundedRectangle (r, 8.0f);
         g.setColour (t.acc.withAlpha (0.6f)); g.drawRoundedRectangle (r.reduced (0.5f), 8.0f, 1.0f);
         g.setColour (t.acc); g.setFont (font (13.0f, true));
-        g.drawFittedText (juce::String::fromUTF8 ("\xe2\x87\xa9 GLISSER LE PATTERN DANS ABLETON"), getLocalBounds().reduced (8, 0), juce::Justification::centred, 2);
+        g.drawFittedText (juce::String::fromUTF8 ("\xe2\x87\xa9 MIDI\nGLISSER"), getLocalBounds().reduced (6, 0), juce::Justification::centred, 2);
     }
     void mouseDrag (const juce::MouseEvent& e) override
     {
@@ -82,6 +82,45 @@ private:
     bool latched = false;
 };
 
+// Bouton de performance à maintenir (ROLL, STEP LOOP) ; clic droit = réglage
+class HoldButton : public juce::Component, public juce::SettableTooltipClient
+{
+public:
+    HoldButton (Ctx& c, const juce::String& t) : ctx (c), title (t) {}
+    std::function<void (bool)> onHold;
+    std::function<juce::String()> sub;
+    std::function<void()> onMenu;
+    void paint (juce::Graphics& g) override
+    {
+        const auto& t = ctx.th();
+        auto r = getLocalBounds().toFloat().reduced (1.0f);
+        g.setColour (held ? t.acc : t.bottom.darker (0.08f)); g.fillRoundedRectangle (r, 9.0f);
+        g.setColour (t.bottomTx); g.drawRoundedRectangle (r, 9.0f, 2.0f);
+        if (held) paintBevel (g, r, 9.0f, false);
+        const auto fg = held ? t.bottom : t.bottomTx;
+        g.setColour (fg);
+        auto f = font (14.0f, true); f.setExtraKerningFactor (0.06f);
+        g.setFont (f);
+        g.drawFittedText (title, getLocalBounds().withTrimmedBottom (20).reduced (4, 0), juce::Justification::centredBottom, 2);
+        g.setColour (fg.withAlpha (0.75f)); g.setFont (mono (11.0f));
+        g.drawText (sub ? sub() : juce::String(), getLocalBounds().withTrimmedTop (getHeight() - 26), juce::Justification::centred);
+    }
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        if (e.mods.isPopupMenu()) { if (onMenu) onMenu(); return; }
+        held = true; if (onHold) onHold (true); repaint();
+    }
+    void mouseUp (const juce::MouseEvent& e) override
+    {
+        if (e.mods.isPopupMenu() || ! held) return;
+        held = false; if (onHold) onHold (false); repaint();
+    }
+private:
+    Ctx& ctx;
+    juce::String title;
+    bool held = false;
+};
+
 // Languette du panneau de piste rangé (texte vertical, clic = déplier)
 class PanelTab : public juce::Component
 {
@@ -114,7 +153,7 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
         : ctx { p }, look (ctx), grid (ctx), lane (ctx), capture (ctx), settingsPage (ctx), mixPage (ctx), libPage (ctx), editor (ctx),
           tabSeq (ctx, juce::String::fromUTF8 ("S\xc3\x89QUENCE")), tabCap (ctx, "CAPTURE"), tabMix (ctx, "MIX"), tabLib (ctx, "SONS"), fillSet (ctx, juce::String::fromUTF8 ("R\xc3\x89GLAGES FILL")),
           chokeAllBtn (ctx, "CHOKE GLOBAL"), undoBtn (ctx, juce::String::fromUTF8 ("\xe2\x86\xb6")), redoBtn (ctx, juce::String::fromUTF8 ("\xe2\x86\xb7")), settingsBtn (ctx, juce::String::fromUTF8 ("\xe2\x9a\x99")),
-          dragBtn (ctx), fillBtn (ctx), spAuth (ctx, "AUTHENTIQUE"), spClean (ctx, "PROPRE"), panelBtn (ctx, juce::String::fromUTF8 ("RANGER \xe2\x96\xb8")), panelTab (ctx)
+          dragBtn (ctx), fillBtn (ctx), spAuth (ctx, "AUTHENTIQUE"), spClean (ctx, "PROPRE"), panelBtn (ctx, juce::String::fromUTF8 ("RANGER \xe2\x96\xb8")), panelTab (ctx), rollBtn (ctx, "ROLL"), loopBtn (ctx, "STEP LOOP")
     {
         setLookAndFeel (&look);
         addAndMakeVisible (grid);
@@ -169,6 +208,27 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
         addAndMakeVisible (panelBtn); panelBtn.textSize = 11.0f;
         panelBtn.onClick = [this] { setPanelOpen (false); };
         addChildComponent (panelTab);
+        addAndMakeVisible (rollBtn); addAndMakeVisible (loopBtn);
+        rollBtn.sub = [this] { const char* n[4] = { "", "1/8", "1/16", "1/32" }; return juce::String (n[rollRate]); };
+        rollBtn.onHold = [this] (bool on) { ctx.proc.uiRollLane.store (grid.selected); ctx.proc.uiRollDiv.store (on ? rollRate : 0); };
+        rollBtn.onMenu = [this]
+        {
+            juce::PopupMenu m; m.addSectionHeader ("ROLL (piste choisie)");
+            m.addItem (1, "1/8", true, rollRate == 1); m.addItem (2, "1/16", true, rollRate == 2); m.addItem (3, "1/32", true, rollRate == 3);
+            juce::Component::SafePointer<Ui> safe (this);
+            m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&rollBtn), [safe] (int r) { if (safe != nullptr && r > 0) { safe->rollRate = r; safe->rollBtn.repaint(); } });
+        };
+        rollBtn.setTooltip (juce::String::fromUTF8 ("Maintenir : roulement sur la piste choisie, calÃ© sur le tempo Â· clic droit : cadence"));
+        loopBtn.sub = [this] { return juce::String (loopSize) + " PAS"; };
+        loopBtn.onHold = [this] (bool on) { ctx.proc.stepLoopLen.store (on ? loopSize : 0); };
+        loopBtn.onMenu = [this]
+        {
+            juce::PopupMenu m; m.addSectionHeader ("STEP LOOP");
+            for (int v : { 1, 2, 4, 8 }) m.addItem (v, juce::String (v) + " pas", true, loopSize == v);
+            juce::Component::SafePointer<Ui> safe (this);
+            m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&loopBtn), [safe] (int r) { if (safe != nullptr && r > 0) { safe->loopSize = r; safe->loopBtn.repaint(); } });
+        };
+        loopBtn.setTooltip (juce::String::fromUTF8 ("Maintenir pendant la lecture : rejoue en boucle les pas en cours Â· clic droit : longueur"));
         panelTab.onClick = [this] { setPanelOpen (true); };
         dragBtn.setTooltip (juce::String::fromUTF8 ("Clips MIDI : Kick C1, Snare D1, Ghost D#1, Rim C#1, Hat F#1 / A#1, Crash C#2, Perc E1 \xc2\xb7 C0 coupe tout"));
         chokeAllBtn.setClickingTogglesState (true);
@@ -178,6 +238,17 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
 
         grid.onSelectLane = [this] (int l) { lane.setLane (l); panelTab.text = juce::String::fromUTF8 ("\xe2\x97\x82  ") + typhon::laneName (l).toUpperCase() + juce::String::fromUTF8 ("  \xc2\xb7  PISTE"); panelTab.repaint(); if (lane.getLockStep() < 0) { grid.lockLane = -1; grid.lockStep = -1; } if (editorOpen) editor.setLane (l); };
         grid.selected = 1;
+        grid.onFocusStep = [this] (int l, int st, bool reveal)
+        {
+            if (reveal)
+            {
+                if (ctx.proc.settings.panelOpen.load() == 0) setPanelOpen (true);
+                lane.showStep (l, st);
+            }
+            else if (lane.lane == l) lane.inspector.setStep (l, st);
+        };
+        lane.inspector.onLock = [this] (int l, int st) { if (grid.onLockStep) grid.onLockStep (l, st); };
+        lane.inspector.onEdited = [this] { grid.repaint(); };
 
         struct K { const char* label; const char* id; std::function<juce::String (float)> fmt; };
         const K ks[] = {
@@ -261,7 +332,7 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
         grid.setVisible (seq && ! editorOpen); lane.setVisible (seq && ! editorOpen);
         editor.setVisible (seq && editorOpen);
         for (auto* k : masterKnobs) k->setVisible (seq);
-        spAuth.setVisible (seq); spClean.setVisible (seq);
+        spAuth.setVisible (seq); spClean.setVisible (seq); rollBtn.setVisible (seq); loopBtn.setVisible (seq);
         const bool open = ctx.proc.settings.panelOpen.load() == 1;
         lane.setVisible (seq && ! editorOpen && open);
         panelBtn.setVisible (seq && ! editorOpen && open);
@@ -425,7 +496,7 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
             g.setFont (gf); g.setColour (t.bottomTx.withAlpha (0.6f));
             g.drawText (juce::String::fromUTF8 ("GRAIN 12 BITS"), grpLabel1, juce::Justification::centred);
             g.drawText (juce::String::fromUTF8 ("GROOVE \xc2\xb7 SORTIE"), grpLabel2, juce::Justification::centred);
-            g.drawText ("FILL", grpLabel3, juce::Justification::centred);
+            g.drawText (juce::String::fromUTF8 ("FILL \xc2\xb7 PERFORMANCE"), grpLabel3.withWidth (grpLabel3.getWidth() + 200), juce::Justification::centred);
         }
     }
 
@@ -493,7 +564,10 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
         bot.removeFromLeft (8);
         sep3 = bot.removeFromLeft (2).toFloat().withTrimmedTop (10).withTrimmedBottom (10);
         bot.removeFromLeft (14);
-        dragBtn.setBounds (bot.withSizeKeepingCentre (bot.getWidth(), 70));
+        auto perf = bot.withSizeKeepingCentre (bot.getWidth(), 78);
+        rollBtn.setBounds (perf.removeFromLeft (72)); perf.removeFromLeft (6);
+        loopBtn.setBounds (perf.removeFromLeft (76)); perf.removeFromLeft (8);
+        dragBtn.setBounds (perf);
     }
 
     Ctx ctx;
@@ -514,6 +588,8 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
     FillButton fillBtn;
     Pill spAuth, spClean, panelBtn;
     PanelTab panelTab;
+    HoldButton rollBtn, loopBtn;
+    int rollRate = 2, loopSize = 2;
     juce::OwnedArray<Knob> masterKnobs;
     juce::ComboBox fillAuto;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> fillAutoAtt;

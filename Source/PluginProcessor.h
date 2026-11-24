@@ -98,6 +98,20 @@ public:
     // Découpe le sample de la piste en coups, les répartit sur les pistes ; renvoie le nombre de tranches
     int sliceLane (int lane, float sensitivity, int maxSlices, bool writePattern);
 
+    // --- patterns A..H + FILL écrit ------------------------------------------
+    static constexpr int numPatterns = 9, fillPatternIndex = 8;
+    int currentPattern() const { return curPattern.load(); }
+    int queuedPattern() const { return pendingPattern.load(); }
+    void selectPattern (int index);            // au début de la boucle suivante si ça joue, sinon tout de suite
+    void copyPattern (int from, int to);
+    void clearPattern (int index) { if (index == curPattern.load()) pattern.clear(); else if (index >= 0 && index < numPatterns) bank[index].clear(); patternChanges.fetch_add (1); }
+    bool patternHasNotes (int index) const;
+    uint32_t patternChangeCount() const { return patternChanges.load(); }
+    std::atomic<int> stepLoopLen { 0 };        // STEP LOOP maintenu : 0 = off, sinon nombre de pas
+    std::atomic<int> uiRollDiv { 0 };          // ROLL depuis l'interface : 0 off, 1 = 1/8, 2 = 1/16, 3 = 1/32
+    std::atomic<int> uiRollLane { 1 };
+    int laneLength (int lane) const { const int l = (int) laneLenP[lane]->load(); return l > 0 ? std::min (l, typhon::numSteps) : seqLength(); }
+
     // --- bibliothèque de machines ------------------------------------------
     std::vector<typhon::LibMachine> library;     // dernier scan (fil principal)
     void rescanLibrary();
@@ -230,18 +244,30 @@ private:
         void redo() override { queue.push ({ typhon::apc::Act::redo }); }
         void commit() override { queue.push ({ typhon::apc::Act::commit }); }
         std::string laneLabel (int l) const override;
+        void selectPattern (int k) override { p.selectPattern (k); }
     } apcHost { *this };
     std::unique_ptr<typhon::apc::Link> apcLink;
     std::atomic<bool> cutRequest { false };
     typhon::apc::Surface::Hit rollHits[64];
     void applyApcActions();
 
+    typhon::Pattern bank[numPatterns];
+    std::atomic<int> curPattern { 0 }, pendingPattern { -1 };
+    std::atomic<uint32_t> patternChanges { 0 };
+    void switchPatternNow (int index);
+    void syncBank();
+    bool wasPlayingSeq = false;
+    int stepLoopSize = 0; int64_t stepLoopStart = 0;
+    std::atomic<float>* laneLenP[typhon::numLanes] {};
+    std::atomic<float>* pFillSrc = nullptr;
+    double uiRollFree = 0.0; bool uiRollRunning = false;
+
     std::unique_ptr<CaptureEngine> captureEngine;
     std::unique_ptr<diag::Watchdog> watchdog;
 
     struct Snapshot
     {
-        std::vector<uint32_t> steps;
+        std::vector<uint64_t> steps;
         std::vector<float> locks, params;
         bool operator== (const Snapshot& o) const;
     };

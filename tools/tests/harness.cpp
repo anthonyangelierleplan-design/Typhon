@@ -3,6 +3,7 @@
 #include <JuceHeader.h>
 #include "../../Source/PluginProcessor.h"
 #include "../../Source/PluginEditor.h"
+#include "../../Source/UiLane.h"
 #include <chrono>
 #include <cstdio>
 
@@ -90,6 +91,80 @@ int main (int argc, char** argv)
         run (p, h, 0.06, &cut);
         auto tail = run (p, h, 0.2);
         CHECK (tail.peak < 1.0e-4f, "MIDI : C0 coupe le crash (reste %.6f)", tail.peak);
+
+        // --- v3 : probabilité, décalage, flam, longueur par piste, step loop, patterns A..H, fill écrit ---
+        {
+            juce::MemoryBlock saved; p.getStateInformation (saved);
+            auto clearAll = [&] { for (int l = 0; l < 8; ++l) for (int st = 0; st < 32; ++st) p.pattern.set (l, st, typhon::Step()); };
+            auto hitsOver = [&] (int lane, double seconds) { const auto a = totalHits (p, lane); run (p, h, seconds); return totalHits (p, lane) - a; };
+            h.playing = true;
+            // probabilité 50 % sur 16 pas : environ la moitié sur 8 mesures
+            clearAll();
+            for (int st = 0; st < 16; ++st) { typhon::Step x; x.vel = 100; x.prob = 50; p.pattern.set (3, st, x); }
+            h.ppq = 0.0;
+            const auto pr = hitsOver (3, 16.0);   // 8 mesures à 120 BPM = 128 pas
+            CHECK (pr > 40 && pr < 88, "probabilité 50 %% : %u coups sur 128", pr);
+            // décalage hors grille : +40 %% d'un pas = 50 ms plus tard à 120 BPM
+            clearAll();
+            { typhon::Step x; x.vel = 100; x.nudge = 40; p.pattern.set (3, 4, x); }
+            h.ppq = 0.0; run (p, h, 0.5 + 0.03);   // pas 5 = 0,5 s
+            const auto n0 = totalHits (p, 3); run (p, h, 0.04); const auto n1 = totalHits (p, 3);
+            CHECK (n1 == n0 + 1, "décalage +40 %% : le coup tombe après le pas (entre 0,53 et 0,57 s)");
+            // flam : deux coups par pas
+            clearAll();
+            { typhon::Step x; x.vel = 100; x.flam = true; p.pattern.set (3, 4, x); }
+            h.ppq = 0.0;
+            CHECK (hitsOver (3, 1.9) == 2, "flam : petite note + coup principal");
+            // longueur par piste : 3 pas en boucle contre 16
+            clearAll();
+            { typhon::Step x; x.vel = 100; p.pattern.set (3, 0, x); }
+            setParam (p, typhon::pid (3, "len"), 3.0f);
+            h.ppq = 0.0;
+            const auto poly = hitsOver (3, 2.0 - 0.01);   // 16 pas : 0,3,6,9,12,15 = 6 coups
+            setParam (p, typhon::pid (3, "len"), 0.0f);
+            CHECK (poly == 6, "longueur de piste 3 pas : %u coups sur 16 pas (6)", poly);
+            // step loop 2 pas
+            clearAll();
+            for (int st = 0; st < 16; ++st) { typhon::Step x; x.vel = 100; p.pattern.set (3, st, x); }
+            { typhon::Step x; x.vel = 100; p.pattern.set (2, 4, x); }
+            h.ppq = 1.0;   // pas 5
+            p.stepLoopLen.store (2);
+            const auto g = hitsOver (2, 2.0);
+            p.stepLoopLen.store (0);
+            CHECK (g == 8, "step loop 2 pas sur le pas 5 : le ghost revient tous les 2 pas (%u)", g);
+            // patterns : A = kick sur le 1, B = kick sur 1 et 9 ; le changement attend la fin de la boucle
+            clearAll();
+            { typhon::Step x; x.vel = 100; p.pattern.set (0, 0, x); }
+            p.selectPattern (1);
+            h.playing = false; run (p, h, 0.02);
+            CHECK (p.currentPattern() == 1 && p.pattern.empty(), "pattern B vide sélectionné à l'arrêt");
+            { typhon::Step x; x.vel = 100; p.pattern.set (0, 0, x); p.pattern.set (0, 8, x); }
+            p.selectPattern (0); run (p, h, 0.02);
+            CHECK (p.currentPattern() == 0 && p.pattern.get (0, 0).on() && ! p.pattern.get (0, 8).on(), "retour au pattern A, intact");
+            h.playing = true; h.ppq = 0.5; run (p, h, 0.05);
+            p.selectPattern (1);
+            run (p, h, 0.3);
+            const bool waited = p.currentPattern() == 0 && p.queuedPattern() == 1;
+            run (p, h, 1.6);
+            CHECK (waited && p.currentPattern() == 1, "changement de pattern en lecture : au début de la boucle suivante");
+            // fill écrit : le pattern FILL remplace la mesure
+            p.selectPattern (8); h.playing = false; run (p, h, 0.02);
+            clearAll();
+            { typhon::Step x; x.vel = 100; for (int st = 0; st < 16; ++st) p.pattern.set (7, st, x); }
+            p.selectPattern (1); run (p, h, 0.02);
+            setParam (p, "fill_src", 1.0f); setParam (p, "fill", 1.0f);
+            h.playing = true; h.ppq = 0.0;
+            const auto wf = hitsOver (7, 2.0 - 0.01);
+            setParam (p, "fill", 0.0f); setParam (p, "fill_src", 0.0f);
+            CHECK (wf == 16, "fill écrit : 16 coups de perc du pattern FILL (%u)", wf);
+            // état : les 9 patterns sont sauvegardés
+            juce::MemoryBlock mb2; p.getStateInformation (mb2);
+            TyphonProcessor q2; q2.setStateInformation (mb2.getData(), (int) mb2.getSize());
+            CHECK (q2.currentPattern() == 1 && q2.patternHasNotes (8) && q2.patternHasNotes (0), "état : patterns A..H + FILL retrouvés");
+            h.playing = false;
+            p.setStateInformation (saved.getData(), (int) saved.getSize());
+            run (p, h, 0.06, &cut); run (p, h, 0.2);
+        }
 
         // pas fusionnés + ratchet : un seul grand pas, coups répartis sur toute sa longueur
         {
@@ -412,6 +487,21 @@ int main (int argc, char** argv)
                 if (auto* b = dynamic_cast<juce::Button*> (findBtn (ui, "GRAIN"))) { b->triggerClick(); juce::MessageManager::getInstance()->runDispatchLoopUntil (50); shot ("seq_grain.png"); }
                 if (auto* b = dynamic_cast<juce::Button*> (findBtn (ui, "SLICE"))) { b->triggerClick(); juce::MessageManager::getInstance()->runDispatchLoopUntil (50); shot ("seq_slice.png"); }
                 if (auto* b = dynamic_cast<juce::Button*> (findBtn (ui, "STRETCH"))) { b->triggerClick(); juce::MessageManager::getInstance()->runDispatchLoopUntil (50); shot ("seq_stretch.png"); }
+                {
+                    // onglet PAS avec un pas réglé (ratchet, flam, probabilité, décalage)
+                    std::function<tui::LanePanel* (juce::Component*)> findPanel = [&] (juce::Component* c) -> tui::LanePanel*
+                    {
+                        if (auto* lp = dynamic_cast<tui::LanePanel*> (c)) return lp;
+                        for (auto* ch : c->getChildren()) if (auto* f = findPanel (ch)) return f;
+                        return nullptr;
+                    };
+                    typhon::Step x; x.vel = 112; x.ratchet = 3; x.flam = true; x.prob = 75; x.nudge = 20; x.pitch = -2;
+                    p.pattern.set (1, 6, x);
+                    p.settings.panelOpen.store (1);
+                    if (auto* b = dynamic_cast<juce::Button*> (findBtn (ui, juce::String::fromUTF8 ("S\xc3\x89QUENCE")))) b->triggerClick();
+                    juce::MessageManager::getInstance()->runDispatchLoopUntil (30);
+                    if (auto* lp = findPanel (ui)) { lp->showStep (1, 6); juce::MessageManager::getInstance()->runDispatchLoopUntil (50); shot ("seq_pas.png"); }
+                }
                 if (auto* b = dynamic_cast<juce::Button*> (findBtn (ui, "SAMPLE"))) { b->triggerClick(); juce::MessageManager::getInstance()->runDispatchLoopUntil (50); }
                 if (auto* b = dynamic_cast<juce::Button*> (findBtn (ui, "32 PAS"))) { b->triggerClick(); juce::MessageManager::getInstance()->runDispatchLoopUntil (50); shot ("seq_32.png"); }
                 if (auto* b = dynamic_cast<juce::Button*> (findBtn (ui, juce::String::fromUTF8 ("\xe2\xa4\xa2 AGRANDIR")))) { b->triggerClick(); juce::MessageManager::getInstance()->runDispatchLoopUntil (50); shot ("editor.png"); }

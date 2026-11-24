@@ -89,3 +89,12 @@ Typhon ouvre lui-même l'APC64 et le passe en mode DAW, comme Ableton le fait : 
 ## Stretch
 
 Onglet STRETCH de chaque piste : **Simple** (allonge sans changer la hauteur) ou **Paulstretch** (nappes extrêmes), facteur ×0,5 à ×32, taille de fenêtre, ou calage sur 1 à 32 pas au tempo du projet. Le calcul se fait hors du fil audio ; l'original reste gardé.
+
+## v3 : façon TR-1000
+
+- **Patterns A à H + FILL** en haut de la grille : le changement se fait au début de la boucle suivante (clignote en attendant). Clic droit : copier vers un autre pattern, effacer. Sur l'APC64 : Shift + scène 1 à 8.
+- **Fill écrit** : choisis FILL, écris ton fill, reviens sur A..H ; Réglages fill > Source = Pattern FILL.
+- **Onglet PAS** (clic droit sur un pas) : vélocité, sous-pas 1 / 1/2 / 1/3 / 1/4, division, **flam**, **probabilité**, **décalage hors grille** (en ms au tempo), pitch, variante, durée, choke, reverse, verrous.
+- **Longueur par piste** (clic droit sur le nom de la piste) : polyrythmies, 1 à 32 pas.
+- **ROLL** et **STEP LOOP** à maintenir sur la façade (clic droit : cadence / longueur).
+- Polices embarquées sous licence OFL (Resources/fonts).

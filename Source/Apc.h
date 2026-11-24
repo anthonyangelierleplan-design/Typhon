@@ -14,6 +14,7 @@
 //      rangée 3 = ratchet 1-4 · division · reverse · pitch −1 · pitch +1 (dernier pas touché)
 //      rangée 2 = jouer les pistes · rangée 1 = mutes
 //  Scènes : 1 PISTES · 2 PISTE · 3 16/32 PAS · 4 SUIVRE · 5 FILL · 6 ROLL 1/8 · 7 ROLL 1/16 · 8 ROLL 1/32 (5-8 : maintenir)
+//  Shift + scène 1..8 = pattern A..H (au début de la boucle suivante)
 //  Boutons de piste = choisir la piste (Mute allumé : mute) · ▲ ▼ = piste · Shift + pad = accent / note fantôme
 //  Clear maintenu + pad ou bouton de piste = effacer la piste · Duplicate = recopier la page / la 1re moitié
 //  Undo = annuler (Shift : rétablir) · Stop = couper tous les sons
@@ -82,6 +83,7 @@ namespace typhon
             virtual void redo() = 0;
             virtual void commit() = 0;
             virtual std::string laneLabel (int lane) const = 0;
+            virtual void selectPattern (int) {}
         };
 
         // Image voulue de la surface (comparée à la précédente : seuls les changements partent)
@@ -140,6 +142,7 @@ namespace typhon
                 if (note >= nScene0 && note < nScene0 + 8)
                 {
                     const int sc = note - nScene0;
+                    if (shift.load()) { if (on) h.selectPattern (sc); return; }   // Shift + scène 1..8 = pattern A..H
                     if (sc == 4) fillHeld.store (on);
                     else if (sc >= 5) { if (on) rollDiv.store (sc - 4); else if (rollDiv.load() == sc - 4) rollDiv.store (0); }
                     else if (on)

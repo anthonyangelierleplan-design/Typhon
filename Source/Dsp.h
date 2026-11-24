@@ -43,16 +43,21 @@ namespace typhon
     //  bits 23..24 durée du pas : 0 = suit la piste, 1 = limitée au pas, 2 = libre
     //  bits 25..28 variante du son : 0 = suit la piste, 1..15 = variante 1..15
     // ------------------------------------------------------------------------
+    //  bits 32..38 probabilité : 100 - valeur (0 = toujours)
+    //  bits 39..45 décalage hors grille en % de pas, signé (-50..+50)
+    //  bit  46     flam (petite note juste avant)
     struct Step
     {
         int vel = 0, ratchet = 1, len = 1, choke = 0, pitch = 0, dur = 0, var = 0;
         bool split = false, rev = false;
+        int prob = 100, nudge = 0;
+        bool flam = false;
 
         bool on() const { return vel > 0; }
 
-        uint32_t pack() const
+        uint64_t pack() const
         {
-            return (uint32_t) (vel & 127)
+            const uint32_t lo = (uint32_t) (vel & 127)
                  | ((uint32_t) ((std::max (1, std::min (4, ratchet)) - 1) & 3) << 7)
                  | ((uint32_t) (split ? 1 : 0) << 9)
                  | ((uint32_t) ((std::max (1, std::min (32, len)) - 1) & 31) << 10)
@@ -61,11 +66,17 @@ namespace typhon
                  | ((uint32_t) (rev ? 1 : 0) << 22)
                  | ((uint32_t) (dur & 3) << 23)
                  | ((uint32_t) (std::max (0, std::min (15, var)) & 15) << 25);
+            const uint32_t hi = (uint32_t) ((100 - std::max (0, std::min (100, prob))) & 127)
+                 | ((uint32_t) (std::max (-50, std::min (50, nudge)) & 127) << 7)
+                 | ((uint32_t) (flam ? 1 : 0) << 14);
+            return (uint64_t) lo | ((uint64_t) hi << 32);
         }
-        static Step unpack (uint32_t v)
+        static Step unpack (uint64_t w)
         {
             Step s;
+            const uint32_t v = (uint32_t) w, hi = (uint32_t) (w >> 32);
             s.vel = (int) (v & 127);
+            if (s.vel == 0 && hi == 0) { s.len = (int) ((v >> 10) & 31) + 1; return s; }   // pas vide : réglages par défaut
             s.ratchet = (int) ((v >> 7) & 3) + 1;
             s.split = ((v >> 9) & 1) != 0;
             s.len = (int) ((v >> 10) & 31) + 1;
@@ -75,13 +86,16 @@ namespace typhon
             s.rev = ((v >> 22) & 1) != 0;
             s.dur = (int) ((v >> 23) & 3); if (s.dur > 2) s.dur = 0;
             s.var = (int) ((v >> 25) & 15);
+            s.prob = 100 - (int) (hi & 127); if (s.prob < 0) s.prob = 100;
+            int n = (int) ((hi >> 7) & 127); if (n >= 64) n -= 128; s.nudge = std::max (-50, std::min (50, n));
+            s.flam = ((hi >> 14) & 1) != 0;
             return s;
         }
     };
 
     struct Pattern
     {
-        std::atomic<uint32_t> steps[numLanes][numSteps];
+        std::atomic<uint64_t> steps[numLanes][numSteps];
         // Verrous par pas : NaN = pas de verrou (valeur réelle du réglage sinon)
         std::atomic<float> locks[numLanes][numSteps][numLocks];
         Pattern() { clear(); }
@@ -98,6 +112,20 @@ namespace typhon
             return false;
         }
         void clearLocks (int lane, int step) { for (int k = 0; k < numLocks; ++k) setLock (lane, step, k, std::numeric_limits<float>::quiet_NaN()); }
+        void copyFrom (const Pattern& o)
+        {
+            for (int l = 0; l < numLanes; ++l)
+                for (int st = 0; st < numSteps; ++st)
+                {
+                    steps[l][st].store (o.steps[l][st].load (std::memory_order_relaxed), std::memory_order_relaxed);
+                    for (int k = 0; k < numLocks; ++k) locks[l][st][k].store (o.locks[l][st][k].load (std::memory_order_relaxed), std::memory_order_relaxed);
+                }
+        }
+        bool empty() const
+        {
+            for (auto& l : steps) for (auto& s : l) if ((s.load (std::memory_order_relaxed) & 127) != 0) return false;
+            return true;
+        }
         Step get (int lane, int step) const { return Step::unpack (steps[lane][step].load (std::memory_order_relaxed)); }
         void set (int lane, int step, const Step& s) { steps[lane][step].store (s.pack(), std::memory_order_relaxed); }
 
@@ -495,14 +523,15 @@ namespace typhon
     // ------------------------------------------------------------------------
     //  Événements d'un pas : positions (en fraction de pas) de chaque coup
     // ------------------------------------------------------------------------
-    struct HitList { int count = 0; float at[4] {}; int vel[4] {}; };
+    struct HitList { int count = 0; float at[5] {}; int vel[5] {}; };
     inline HitList hitsOf (const Step& s)
     {
         HitList h;
         if (! s.on()) return h;
-        if (s.split) { h.count = 2; h.at[0] = 0.0f; h.at[1] = 0.5f; h.vel[0] = s.vel; h.vel[1] = std::max (1, s.vel - 10); return h; }
-        h.count = std::max (1, std::min (4, s.ratchet));
-        for (int i = 0; i < h.count; ++i) { h.at[i] = (float) i / (float) h.count; h.vel[i] = i == 0 ? s.vel : std::max (1, s.vel - 10); }
+        if (s.flam) { h.at[h.count] = -0.12f; h.vel[h.count++] = std::max (1, s.vel * 55 / 100); }   // la petite note, juste avant
+        if (s.split) { h.at[h.count] = 0.0f; h.vel[h.count++] = s.vel; h.at[h.count] = 0.5f; h.vel[h.count++] = std::max (1, s.vel - 10); return h; }
+        const int n = std::max (1, std::min (4, s.ratchet));
+        for (int i = 0; i < n; ++i) { h.at[h.count] = (float) i / (float) n; h.vel[h.count++] = i == 0 ? s.vel : std::max (1, s.vel - 10); }
         return h;
     }
 

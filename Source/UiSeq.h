@@ -26,6 +26,42 @@ namespace tui
             page2.onClick = [this] { if (ctx.proc.seqLength() == 32) { page = 1; follow = false; repaint(); } };
             followBtn.isOn = [this] { return follow; };
             followBtn.onClick = [this] { follow = ! follow; repaint(); };
+            for (int k = 0; k < TyphonProcessor::numPatterns; ++k)
+            {
+                const bool isFill = k == TyphonProcessor::fillPatternIndex;
+                auto* b = patBtns.add (new Pill (c, isFill ? juce::String ("FILL") : juce::String::charToString ((juce::juce_wchar) ('A' + k))));
+                b->textSize = 11.0f;
+                b->isOn = [this, k] { return ctx.proc.currentPattern() == k; };
+                b->onClick = [this, k] { ctx.proc.selectPattern (k); repaint(); };
+                b->setTooltip (isFill ? juce::String::fromUTF8 ("Pattern FILL : le fill que tu Ã©" "cris toi-mÃªme (RÃ©glages fill > source)")
+                                      : juce::String::fromUTF8 ("Pattern ") + b->getButtonText() + juce::String::fromUTF8 (" Â· change au dÃ©" "but de la boucle suivante Â· clic droit : copier, effacer"));
+                b->addMouseListener (this, false);
+                addAndMakeVisible (b);
+            }
+        }
+
+        std::function<void (int, int, bool)> onFocusStep;   // (piste, pas, montrer le panneau) : le pas à éditer dans le panneau
+        int focusLane = -1, focusStep = -1;
+        void setFocus (int lane, int st, bool reveal) { focusLane = lane; focusStep = st; if (onFocusStep) onFocusStep (lane, st, reveal); repaint(); }
+
+        void patternMenu (int k)
+        {
+            juce::PopupMenu m, to;
+            const auto name = [] (int i) { return i == TyphonProcessor::fillPatternIndex ? juce::String ("FILL") : juce::String::charToString ((juce::juce_wchar) ('A' + i)); };
+            m.addSectionHeader ("Pattern " + name (k));
+            for (int i = 0; i < TyphonProcessor::numPatterns; ++i) if (i != k) to.addItem (100 + i, name (i) + (ctx.proc.patternHasNotes (i) ? juce::String::fromUTF8 ("  (remplace)") : juce::String()));
+            m.addSubMenu ("Copier vers", to);
+            m.addItem (1, "Effacer ce pattern", ctx.proc.patternHasNotes (k));
+            juce::Component::SafePointer<SeqGrid> safe (this);
+            m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (patBtns[k]), [safe, k] (int r)
+            {
+                if (safe == nullptr || r == 0) return;
+                auto& P = safe->ctx.proc;
+                if (r >= 100) P.copyPattern (k, r - 100);
+                else if (r == 1) P.clearPattern (k);
+                P.undoCommit();
+                safe->repaint();
+            });
         }
 
         std::function<void (int)> onSelectLane;
@@ -47,6 +83,8 @@ namespace tui
             page1.setBounds (r.removeFromLeft (70)); r.removeFromLeft (6);
             page2.setBounds (r.removeFromLeft (70)); r.removeFromLeft (6);
             followBtn.setBounds (r.removeFromLeft (80));
+            r.removeFromLeft (16);
+            for (int k = 0; k < patBtns.size(); ++k) { patBtns[k]->setBounds (r.removeFromLeft (k == TyphonProcessor::fillPatternIndex ? 44 : 28)); r.removeFromLeft (3); }
         }
         static constexpr int nameW = 132, outW = 62, chokeW = 70, gap = 10;
 
@@ -86,6 +124,14 @@ namespace tui
             const int play = ctx.proc.playingStep();
             const bool multi = ctx.proc.settings.multiOut.load() == 1;
 
+            // patterns : pastille sous ceux qui contiennent des notes, contour clignotant sur celui qui attend la fin de boucle
+            for (int k = 0; k < patBtns.size(); ++k)
+            {
+                auto pb = patBtns[k]->getBounds().toFloat();
+                if (ctx.proc.patternHasNotes (k)) { g.setColour (t.acc.withAlpha (0.8f)); g.fillEllipse (pb.getCentreX() - 2.0f, pb.getBottom() + 2.0f, 4.0f, 4.0f); }
+                if (ctx.proc.queuedPattern() == k && (juce::Time::getMillisecondCounter() / 250) % 2 == 0)
+                { g.setColour (t.acc); g.drawRoundedRectangle (pb.expanded (2.0f), 6.0f, 2.0f); }
+            }
             // en-tête : numéros des pas
             g.setFont (mono (11.0f));
             g.setColour (t.sub);
@@ -166,9 +212,19 @@ namespace tui
                 g.drawText (ch ? "CHOKE" : "OFF", cr.toNearestInt(), juce::Justification::centred);
 
                 // pas
+                const int laneLen = ctx.proc.laneLength (lane);
                 for (int j = off; j < off + 16; ++j)
                 {
                     auto r = stepRect (lane, j);
+                    if (j >= laneLen)
+                    {
+                        // au-delà de la longueur de cette piste : case vide en pointillés
+                        juce::Path pth; pth.addRoundedRectangle (r.reduced (1.0f), 5.0f);
+                        juce::Path dashed; const float dl[] = { 3.0f, 3.0f };
+                        juce::PathStrokeType (1.0f).createDashedStroke (dashed, pth, dl, 2);
+                        g.setColour (t.sub.withAlpha (0.35f)); g.fillPath (dashed);
+                        continue;
+                    }
                     const Step s = pat.get (lane, j);
                     const int head = s.on() ? -1 : pat.headOf (lane, j);
                     if (head >= off) continue;   // dessiné avec son pas de tête (pas fusionnés = un seul grand pas)
@@ -240,6 +296,30 @@ namespace tui
                             g.setColour (t.bg); g.setFont (mono (10.0f, true));
                             g.drawText ((s.pitch > 0 ? "+" : "") + juce::String (s.pitch), r.toNearestInt().reduced (3, 4), juce::Justification::topLeft);
                         }
+                    }
+                    if (s.on())
+                    {
+                        if (s.prob < 100)
+                        {
+                            g.setColour (t.bg.withAlpha (0.85f)); g.setFont (mono (9.0f, true));
+                            g.drawText (juce::String (s.prob) + "%", r.toNearestInt().reduced (3, 3), juce::Justification::bottomLeft);
+                        }
+                        if (s.nudge != 0)
+                        {
+                            // petit repère du décalage hors grille
+                            const float cx = r.getCentreX() + r.getWidth() * 0.4f * (float) s.nudge / 50.0f;
+                            g.setColour (t.lcdTx); g.fillRect (cx - 1.0f, r.getBottom() + 1.0f, 2.0f, 3.0f);
+                        }
+                        if (s.flam)
+                        {
+                            g.setColour (stepColour (t, s, j).withMultipliedAlpha (0.6f));
+                            g.fillRoundedRectangle (r.getX() - 3.5f, r.getY() + 6.0f, 3.0f, r.getHeight() - 12.0f, 1.5f);
+                        }
+                    }
+                    if (focusLane == lane && focusStep == j && lockLane < 0)
+                    {
+                        g.setColour (t.tx.withAlpha (0.9f));
+                        g.drawRoundedRectangle (r.expanded (2.5f), 6.0f, 1.5f);
                     }
                     if (pat.hasLocks (lane, j))
                     {
@@ -313,6 +393,8 @@ namespace tui
         void mouseDown (const juce::MouseEvent& e) override
         {
             using namespace typhon;
+            for (int k = 0; k < patBtns.size(); ++k)
+                if (e.eventComponent == patBtns[k]) { if (e.mods.isPopupMenu()) patternMenu (k); return; }
             const auto p = e.getPosition();
             const int lane = laneAt (p);
             if (lane < 0) return;
@@ -338,7 +420,13 @@ namespace tui
             if (e.mods.isPopupMenu())
             {
                 if (inSelection (lane, j)) selectionMenu (lane, j);
-                else stepMenu (lane, j);
+                else
+                {
+                    const auto fs = pat.get (lane, j);
+                    const int head = fs.on() ? j : pat.headOf (lane, j);
+                    setFocus (lane, head >= 0 ? head : j, true);
+                    stepMenu (lane, j);
+                }
                 return;
             }
             // Maj + glisser : sélection d'une zone
@@ -355,12 +443,14 @@ namespace tui
             if (! s.on() && pat.headOf (lane, j) >= 0) { dragLane = -1; return; }   // dans une liaison
             dragLane = lane; dragStep = j; dragMoved = false; dragCreated = false;
             if (! s.on()) { s = Step(); s.vel = 100; pat.set (lane, j, s); dragCreated = true; }
+            setFocus (lane, j, false);
             repaint();
         }
 
         void mouseDrag (const juce::MouseEvent& e) override
         {
             using namespace typhon;
+            for (auto* b : patBtns) if (e.eventComponent == b) return;
             if (selecting)
             {
                 const int l = juce::jlimit (0, numLanes - 1, laneAt (e.getPosition()) < 0 ? (e.y < headerH ? 0 : numLanes - 1) : laneAt (e.getPosition()));
@@ -376,8 +466,9 @@ namespace tui
             repaint();
         }
 
-        void mouseUp (const juce::MouseEvent&) override
+        void mouseUp (const juce::MouseEvent& e) override
         {
+            for (auto* b : patBtns) if (e.eventComponent == b) return;
             if (selecting) { selecting = false; return; }
             using namespace typhon;
             if (dragLane >= 0 && ! dragMoved && ! dragCreated)
@@ -464,7 +555,7 @@ namespace tui
         }
 
     private:
-        struct Cell { uint32_t step = 0; float locks[typhon::numLocks] {}; };
+        struct Cell { uint64_t step = 0; float locks[typhon::numLocks] {}; };
         std::vector<Cell> clipBlock;
         int clipW = 0, clipH = 0;
         bool hasSel = false, selecting = false;
@@ -632,6 +723,13 @@ namespace tui
             m.addItem (11, juce::String::fromUTF8 ("Dur\xc3\xa9" "e limit\xc3\xa9" "e au pas : toutes les pistes"));
             m.addItem (12, juce::String::fromUTF8 ("Dur\xc3\xa9" "e libre : toutes les pistes"));
             m.addItem (5, juce::String::fromUTF8 ("Gate MIDI (la dur\xc3\xa9" "e de la note coupe le son)"), true, gate);
+            {
+                juce::PopupMenu lenM;
+                const int cur = (int) ap.getRawParameterValue (pid (lane, "len"))->load();
+                lenM.addItem (400, "Comme le pattern", true, cur == 0);
+                for (int v = 1; v <= 32; ++v) lenM.addItem (400 + v, juce::String (v) + " pas", true, cur == v);
+                m.addSubMenu ("Longueur de la piste" + juce::String (cur > 0 ? " (" + juce::String (cur) + ")" : juce::String()), lenM);
+            }
             m.addSeparator();
             m.addItem (6, "Effacer la piste");
             m.addItem (7, juce::String::fromUTF8 ("Copier le pattern de cette piste"));
@@ -669,9 +767,13 @@ namespace tui
                                 if (auto* prm = P.apvts.getParameter (pid (o, "steplen"))) prm->setValueNotifyingHost (r == 11 ? 1.0f : 0.0f);
                             break;
                         case 6: for (int j = 0; j < numSteps; ++j) { P.pattern.set (lane, j, Step()); P.pattern.clearLocks (lane, j); } break;
+                        default:
+                            if (r >= 400 && r <= 432)
+                                if (auto* prm = dynamic_cast<juce::AudioParameterInt*> (P.apvts.getParameter (pid (lane, "len"))))
+                                { prm->beginChangeGesture(); *prm = r - 400; prm->endChangeGesture(); }
+                            break;
                         case 7: safe->clip.clear(); for (int j = 0; j < numSteps; ++j) safe->clip.push_back (P.pattern.steps[lane][j].load()); break;
                         case 8: for (int j = 0; j < numSteps && j < (int) safe->clip.size(); ++j) P.pattern.steps[lane][j].store (safe->clip[(size_t) j]); break;
-                        default: break;
                     }
                     safe->repaint();
                 });
@@ -682,8 +784,9 @@ namespace tui
         bool dragMoved = false, dragCreated = false;
         float flashes[typhon::numLanes] {};
         uint32_t lastHits[typhon::numLanes] {};
-        std::vector<uint32_t> clip;
+        std::vector<uint64_t> clip;
         Pill len16, len32, page1, page2, followBtn;
+        juce::OwnedArray<Pill> patBtns;
         std::unique_ptr<juce::FileChooser> chooser;
     };
 }

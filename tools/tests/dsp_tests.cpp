@@ -18,7 +18,7 @@ int main()
     // 1) pas : rangement
     {
         bool ok = true;
-        for (int vel : { 0, 1, 55, 100, 127 }) for (int r = 1; r <= 4; ++r) for (int len = 1; len <= 16; ++len) for (int ch = 0; ch < 3; ++ch) for (int sp = 0; sp < 2; ++sp)
+        for (int vel : { 1, 55, 100, 127 }) for (int r = 1; r <= 4; ++r) for (int len = 1; len <= 16; ++len) for (int ch = 0; ch < 3; ++ch) for (int sp = 0; sp < 2; ++sp)
         {
             Step s; s.vel = vel; s.ratchet = r; s.len = len; s.choke = ch; s.split = sp;
             Step u = Step::unpack (s.pack());
@@ -27,6 +27,11 @@ int main()
         for (int pt = -12; pt <= 12; ++pt) for (int rv = 0; rv < 2; ++rv) for (int len = 1; len <= 32; len += 31)
         { Step s; s.vel = 90; s.pitch = pt; s.rev = rv; s.len = len; s.ratchet = 3; s.choke = 2; Step u = Step::unpack (s.pack()); ok &= u.pitch == pt && u.rev == (bool) rv && u.len == len && u.ratchet == 3 && u.choke == 2; }
         CHECK (ok, "pas : rangement / lecture identiques (toutes combinaisons, pitch, reverse, 32 pas)");
+        { bool ok2 = true;
+          for (int pr : { 1, 50, 99, 100 }) for (int nd : { -50, -1, 0, 1, 50 }) for (int fl = 0; fl < 2; ++fl)
+          { Step s; s.vel = 80; s.prob = pr; s.nudge = nd; s.flam = fl; s.pitch = -12; Step u = Step::unpack (s.pack()); ok2 &= u.prob == pr && u.nudge == nd && u.flam == (bool) fl && u.pitch == -12 && u.vel == 80; }
+          Step e = Step::unpack (0); ok2 &= ! e.on() && e.pitch == 0 && e.prob == 100 && e.nudge == 0;
+          CHECK (ok2, "pas v3 : probabilité, décalage, flam ; un pas vide n'a ni pitch ni décalage"); }
         { Pattern q; CHECK (! q.hasLocks (0, 0), "verrous : vides au départ"); q.setLock (2, 31, lkCut, 800.0f); CHECK (q.hasLocks (2, 31) && q.lock (2, 31, lkCut) == 800.0f, "verrous : écriture / lecture"); }
         Pattern p; Step h; h.vel = 100; h.len = 3; p.set (0, 4, h);
         CHECK (p.headOf (0, 5) == 4 && p.headOf (0, 6) == 4 && p.headOf (0, 7) == -1 && p.headOf (0, 3) == -1, "liaison : pas recouverts reconnus");
