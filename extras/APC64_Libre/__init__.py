@@ -138,8 +138,15 @@ class APC64Libre(_OfficialAPC64):
             self._setup_user_mode()
         except Exception as e:
             import traceback
-            self.log_message("APC64 Libre : ERREUR au demarrage du mode USER : {}\n{}".format(e, traceback.format_exc()))
+            self._log("APC64 Libre : ERREUR au demarrage du mode USER : {}\n{}".format(e, traceback.format_exc()))
             self.show_message("APC64 Libre : mode USER indisponible (voir Log.txt)")
+
+    def _log(self, text):
+        # journal d'Ableton (Log.txt) ; le framework v3 n'a plus log_message
+        try:
+            self._c_instance.log_message(text)
+        except Exception:
+            print(text)
 
     def _setup_user_mode(self):
         self._user_paths = [None] * STRIPS
@@ -153,7 +160,7 @@ class APC64Libre(_OfficialAPC64):
         self._on_strip_touched.replace_subjects(self.elements.touch_elements_raw)
         self._on_selected_parameter.subject = self.song.view
         self._on_strip_mode_changed(modes.selected_mode)
-        self.log_message("APC64 Libre : pret ({} strips assignes)".format(sum(1 for p in self._user_paths if p)))
+        self._log("APC64 Libre : pret ({} strips assignes)".format(sum(1 for p in self._user_paths if p)))
 
     # --- état des modes ---------------------------------------------------------------------
     def _user_mode(self):
@@ -210,7 +217,7 @@ class APC64Libre(_OfficialAPC64):
         i = _index_of(self.elements.touch_elements_raw, element)
         shift = self._held(self.elements.shift_button, self._shift_held)
         clear = self._held(self.elements.clear_button, self._clear_held)
-        self.log_message("APC64 Libre : strip {} touche (shift={}, clear={})".format(i + 1, shift, clear))
+        self._log("APC64 Libre : strip {} touche (shift={}, clear={})".format(i + 1, shift, clear))
         self._clear_held = clear
         # strip libre : un simple toucher assigne le réglage sélectionné ; strip déjà assigné : SHIFT pour changer
         if not (shift or clear or (0 <= i < STRIPS and self._user_paths[i] is None)):
@@ -225,7 +232,7 @@ class APC64Libre(_OfficialAPC64):
             path = parameter_path(self.song, parameter) if liveobj_valid(parameter) else None
             if path is None:
                 self.show_message("APC64 Libre : clique d'abord un réglage dans Ableton (bouton d'un appareil Live, volume, pan ou envoi)")
-                self.log_message("APC64 Libre : aucun reglage selectionne")
+                self._log("APC64 Libre : aucun reglage selectionne")
                 return
             self._user_paths[i] = path
             self.show_message("APC64 Libre : strip {} = {}".format(i + 1, parameter.name))
