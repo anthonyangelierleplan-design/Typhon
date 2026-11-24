@@ -101,6 +101,8 @@ namespace typhon
             std::atomic<int> view { 0 }, page { 0 }, selLane { 0 }, writeVel { 5 }, lastStep { -1 }, rollDiv { 0 };
             std::atomic<bool> shift { false }, clearHeld { false }, muteMode { false }, follow { false }, fillHeld { false };
             std::atomic<bool> sessionView { true };   // la grille appartient à Typhon (vue Session de l'APC64)
+            std::atomic<int> touchedStrips { 0 };       // un strip ne règle rien tant qu'on ne le touche pas (évite les échos)
+            std::atomic<uint64_t> dirtyPads { 0 };      // pads à redessiner tout de suite (l'APC64 change la LED d'un pad appuyé)
 
             int pages (int seqLen) const { return std::max (1, seqLen / 8); }
 
@@ -114,11 +116,21 @@ namespace typhon
                 if (d[0] == 0xF0) { const int v = viewReport (d, n); if (v >= 0) sessionView.store (v == 0); return; }
                 if (n < 3) return;
                 const int type = d[0] & 0xF0, ch = d[0] & 0x0F;
-                if (type == 0xE0 && ch < 8) { h.setStrip (ch, selLane.load(), (float) ((d[2] << 7) | d[1]) / 16383.0f); return; }
+                if (type == 0xE0 && ch < 8)
+                {
+                    if (touchedStrips.load() & (1 << ch)) h.setStrip (ch, selLane.load(), (float) ((d[2] << 7) | d[1]) / 16383.0f);
+                    return;
+                }
                 const bool on = type == 0x90 && d[2] > 0, off = type == 0x80 || (type == 0x90 && d[2] == 0);
                 if (! on && ! off) return;
                 const int note = d[1];
-                if (note < 64) { if (on) pad (note % 8, note / 8, pat, h); return; }
+                if (note < 64) { if (on) pad (note % 8, note / 8, pat, h); dirtyPads.fetch_or (1ull << note); return; }
+                if (note >= nStripTouch0 && note < nStripTouch0 + 8)
+                {
+                    const int bit = 1 << (note - nStripTouch0);
+                    if (on) touchedStrips.fetch_or (bit); else touchedStrips.fetch_and (~bit);
+                    return;
+                }
                 switch (note)
                 {
                     case nShift: shift.store (on); return;

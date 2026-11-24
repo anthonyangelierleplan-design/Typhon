@@ -229,9 +229,12 @@ int main()
         // Clear maintenu + bouton de piste
         press (nClear, 0); press (nTrack0 + 5, 0); release (nClear);
         CHECK (! pat.get (5, 2).on() && ! pat.get (5, 18).on(), "apc : Clear + piste = efface la piste");
-        // strips (pitch bend 14 bits)
+        // strips (pitch bend 14 bits) : seulement quand on les touche
         uint8_t pb[3] = { 0xE1, 0x7F, 0x7F }; sf.handle (pb, 3, pat, h);
-        CHECK (h.strip[1] > 0.999f, "apc : strip 2 = Bits");
+        CHECK (h.strip[1] == 0.0f, "apc : strip non touché = ignoré (écho de position)");
+        press (nStripTouch0 + 1, 0); sf.handle (pb, 3, pat, h); release (nStripTouch0 + 1);
+        CHECK (h.strip[1] > 0.999f, "apc : strip 2 touché = Bits");
+        sf.view.store (0); sf.page.store (0); pat.set (0, 4, Step()); press (60); CHECK (pat.get (0, 4).on() && pat.get (0, 4).pitch == 0 && (sf.dirtyPads.load() >> 60 & 1), "apc : pas posé sans pitch, LED redessinée tout de suite");
         // vue Session perdue / retrouvée
         uint8_t rep[9] = { 0xF0, 0x47, 0x00, 0x53, 0x19, 0x00, 0x01, 0x02, 0xF7 }; sf.handle (rep, 9, pat, h);
         CHECK (! sf.sessionView.load(), "apc : vue Note de l'APC64 détectée");

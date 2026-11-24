@@ -135,8 +135,9 @@ namespace typhon { namespace apc {
 
         void draw (const Frame& f)
         {
+            const uint64_t dirty = surface.dirtyPads.exchange (0);
             for (int i = 0; i < 64; ++i)
-                if (force || f.padB[i] != sent.padB[i] || f.padC[i] != sent.padC[i])
+                if (force || ((dirty >> i) & 1) || f.padB[i] != sent.padB[i] || f.padC[i] != sent.padC[i])
                     raw ((uint8_t) (0x90 | (f.padC[i] == 0 ? 0 : f.padB[i])), (uint8_t) i, f.padC[i]);
             for (int l = 0; l < 8; ++l)
                 if (force || f.trackC[l] != sent.trackC[l]) raw ((uint8_t) (0x90 | bFull), (uint8_t) (nTrack0 + l), f.trackC[l]);
