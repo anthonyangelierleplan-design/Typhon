@@ -1,0 +1,36 @@
+name: Symbolize crash
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Commit du build qui a planté"
+        required: true
+      offsets:
+        description: "Décalages dans Typhon.vst3, séparés par des espaces (ex: 0x523b6 0x14ac9b)"
+        required: true
+
+jobs:
+  symbolize:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.sha }}
+      - name: Configure
+        run: cmake -B build -A x64
+      - name: Build
+        run: cmake --build build --config Release --target Typhon_VST3 --parallel
+      - name: Symbolize
+        shell: pwsh
+        run: |
+          $bin = Get-ChildItem -Path build -Recurse -Filter "Typhon.vst3" -File | Select-Object -First 1
+          $pdb = Get-ChildItem -Path build -Recurse -Filter "Typhon.pdb" | Where-Object { $_.FullName -notmatch "Shared" } | Select-Object -First 1
+          Write-Host "BIN $($bin.FullName)  PDB $($pdb.FullName)"
+          $base = 0x180000000
+          foreach ($o in "${{ github.event.inputs.offsets }}".Split(" ")) {
+            if ($o -eq "") { continue }
+            $addr = "0x{0:x}" -f ($base + [Convert]::ToInt64($o, 16))
+            Write-Host "==== $o"
+            & llvm-symbolizer --obj="$($bin.FullName)" --pdb="$($pdb.FullName)" --inlining --functions=linkage $addr
+          }
