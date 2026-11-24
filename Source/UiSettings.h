@@ -6,7 +6,7 @@
 
 namespace tui
 {
-    class SettingsPage : public juce::Component
+    class SettingsPage : public juce::Component, private juce::Timer
     {
     public:
         std::function<void()> onChanged, onClose;
@@ -32,12 +32,14 @@ namespace tui
                      { { "Carte des notes", { "Typhon", "General MIDI", "EZdrummer" }, &S.midiMap },
                        { "Canal d'entr\xc3\xa9" "e", { "Omni", "10" }, &S.midiChannel, { 0, 10 } } });
             addCard ("AKAI APC64",
-                     juce::String::fromUTF8 ("Mode Custom, canal 16 : 4 groupes Drum Pads (notes 36, 52, 68, 84) et faders CC 20 \xc3\xa0 27. Pads du bas = jouer, Mute, Roll, Fill ; 4 rang\xc3\xa9" "es du haut = les 32 pas de la piste jou\xc3\xa9" "e en dernier. Voir le guide APC64."),
-                     { { "Contr\xc3\xb4leur", { "Off", "On" }, &S.apcOn } });
+                     juce::String::fromUTF8 ("Typhon pilote l'APC64 en direct : la grille 8\xc3\x97" "8 devient le s\xc3\xa9quenceur. Dans Ableton, mets la surface de contr\xc3\xb4le APC64 sur \xc2\xab Aucun \xc2\xbb. Repasse sur Off pour la rendre \xc3\xa0 Ableton."),
+                     { { "Piloter l'APC64", { "Off", "On" }, &S.apcOn } });
+            cards.back().status = [this] { return ctx.proc.apcStatus(); };
             addCard ("INTERFACE", {},
                      { { "Th\xc3\xa8me", { "Atelier", "Nuit", "Phosphore", "Bel Air" }, &S.theme },
                        { "Taille de la fen\xc3\xaatre", { "75 %", "100 %", "125 %", "150 %" }, &S.uiScale },
                        { "Cran magn\xc3\xa9tique au z\xc3\xa9ro", { "Off", "On" }, &S.snapZero } });
+            startTimerHz (2);
             addAndMakeVisible (closeBtn);
             closeBtn.strong = true;
             closeBtn.textSize = 14.0f;
@@ -58,9 +60,17 @@ namespace tui
                 g.setFont (font (13.0f)); g.setColour (t.tx);
                 for (auto& row : c.rows) g.drawText (row.labelText, row.labelArea, juce::Justification::centredLeft);
                 g.setColour (t.sub); g.setFont (font (12.0f));
-                g.drawFittedText (c.note, c.noteArea, juce::Justification::topLeft, 4);
+                g.drawFittedText (c.note, c.noteArea, juce::Justification::topLeft, 5);
+                if (c.status)
+                {
+                    g.setColour (valueColour (t)); g.setFont (font (12.0f, true));
+                    g.drawFittedText (c.status(), c.noteArea.withTrimmedTop (c.noteArea.getHeight() - 48), juce::Justification::bottomLeft, 3);
+                    g.setColour (t.sub); g.setFont (font (12.0f));
+                }
             }
         }
+
+        void timerCallback() override { if (isShowing()) repaint(); }
 
         void resized() override
         {
@@ -92,7 +102,7 @@ namespace tui
     private:
         struct RowDef { const char* label; std::vector<const char*> opts; std::atomic<int>* target; std::vector<int> values {}; };
         struct Row { juce::String labelText; juce::Rectangle<int> labelArea; std::vector<Pill*> buttons; };
-        struct Card { juce::String title, note; std::vector<Row> rows; juce::Rectangle<int> area, noteArea; };
+        struct Card { juce::String title, note; std::vector<Row> rows; juce::Rectangle<int> area, noteArea; std::function<juce::String()> status; };
 
         void addCard (const char* title, const juce::String& note, std::vector<RowDef> defs)
         {

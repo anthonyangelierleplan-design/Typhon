@@ -442,11 +442,11 @@ namespace tui
             sliceGo (c, juce::String::fromUTF8 ("R\xc3\x89PARTIR SUR LES PISTES")), slicePat (c, juce::String::fromUTF8 ("R\xc3\x89PARTIR + PATTERN")),
             lockDone (c, "TERMINER"), lockClear (c, "EFFACER")
         {
-            const char* tabNames[4] = { "SAMPLE", "GRAIN", "SLICE", "DYN" };
-            for (int k = 0; k < 4; ++k)
+            const char* tabNames[5] = { "SAMPLE", "GRAIN", "SLICE", "STRETCH", "DYN" };
+            for (int k = 0; k < 5; ++k)
             {
                 auto* b = tabs.add (new Pill (c, tabNames[k]));
-                b->textSize = 11.0f;
+                b->textSize = 10.5f;
                 b->isOn = [this, k] { return tab == k; };
                 b->onClick = [this, k] { setTab (k); };
                 addAndMakeVisible (b);
@@ -506,6 +506,29 @@ namespace tui
             lockDone.strong = true;
             lockDone.onClick = [this] { setLockStep (-1); };
             lockClear.onClick = [this] { if (lockStep >= 0) ctx.proc.pattern.clearLocks (lane, lockStep); setLockStep (lockStep); };
+            // stretch
+            const char* modeNames[3] = { "OFF", "SIMPLE", "PAULSTRETCH" };
+            for (int k = 0; k < 3; ++k)
+            {
+                auto* b = strModes.add (new Pill (c, modeNames[k]));
+                b->textSize = 11.0f;
+                b->isOn = [this, k] { return (int) param ("strmode") == k; };
+                b->onClick = [this, k] { setChoice ("strmode", k); };
+                addChildComponent (b);
+            }
+            const char* fitNames[7] = { "LIBRE", "1", "2", "4", "8", "16", "32" };
+            for (int k = 0; k < 7; ++k)
+            {
+                auto* b = strFits.add (new Pill (c, fitNames[k]));
+                b->textSize = 11.0f;
+                b->isOn = [this, k] { return (int) param ("strfit") == k; };
+                b->onClick = [this, k] { setChoice ("strfit", k); };
+                addChildComponent (b);
+            }
+            strAmt.formatter = [this] (float v) { return (int) param ("strfit") > 0 ? juce::String::fromUTF8 ("\xc3\x97") + juce::String (ctx.proc.stretchFactor (lane), 2)
+                                                                                    : juce::String::fromUTF8 ("\xc3\x97") + juce::String (v, 2); };
+            strWin.formatter = fmtPct;
+            addChildComponent (strAmt); addChildComponent (strWin);
             setLane (1);
             setTab (0);
         }
@@ -519,6 +542,7 @@ namespace tui
             for (int i = 0; i < 12; ++i) sampleKnobs[i]->attach (pid (l, sp[i]));
             const char* gp[10] = { "gpos", "gsize", "gdens", "gspray", "gpitch", "gprand", "gstereo", "gspeed", "gdur", "grev" };
             for (int i = 0; i < 10; ++i) grainKnobs[i]->attach (pid (l, gp[i]));
+            strAmt.attach (pid (l, "stramt")); strWin.attach (pid (l, "strwin"));
             dyn.setPrefix ("l" + juce::String (l) + "_");
             auto& ap = ctx.proc.apvts;
             btnAtts.clear(); boxAtts.clear();
@@ -557,12 +581,15 @@ namespace tui
             for (juce::Component* c : { (juce::Component*) &chokeBtn, (juce::Component*) &revBtn, (juce::Component*) &gateBtn, (juce::Component*) &muteBtn, (juce::Component*) &stepLenBtn,
                                         (juce::Component*) &groupBox, (juce::Component*) &outBox, (juce::Component*) &ftypeBox, (juce::Component*) &loadBtn })
                 c->setVisible (t == 0);
-            wave.setVisible (t != 3);
-            bigBtn.setVisible (t != 3);
+            wave.setVisible (t != 4);
+            bigBtn.setVisible (t != 4);
+            for (auto* b : strModes) b->setVisible (t == 3);
+            for (auto* b : strFits) b->setVisible (t == 3);
+            strAmt.setVisible (t == 3); strWin.setVisible (t == 3);
             granOn.setVisible (t == 1); freezeBtn.setVisible (t == 1);
             sliceSens.setVisible (t == 2); sliceGo.setVisible (t == 2); slicePat.setVisible (t == 2);
             for (auto* b : sliceCount) b->setVisible (t == 2);
-            dyn.setVisible (t == 3);
+            dyn.setVisible (t == 4);
             wave.mode = t == 1 ? Waveform::grainMode : (t == 2 ? Waveform::sliceMode : Waveform::sampleMode);
             if (t == 2) updateSlices();
             resized();
@@ -572,7 +599,8 @@ namespace tui
         void tick()
         {
             wave.repaint();
-            if (tab == 3) dyn.tick();
+            if (tab == 4) dyn.tick();
+            if (tab == 3) { strAmt.setAlpha ((int) param ("strfit") > 0 ? 0.45f : 1.0f); strAmt.repaint(); repaint (strInfo); }
             if (tab == 0) for (auto* k : sampleKnobs) if (k->isLocked()) k->repaint();
         }
 
@@ -605,6 +633,22 @@ namespace tui
                 g.setColour (valueColour (t)); g.setFont (mono (12.0f));
                 g.drawText (juce::String ((int) wave.slices.size()) + juce::String::fromUTF8 (" coups d\xc3\xa9tect\xc3\xa9s"), sliceInfo, juce::Justification::centredLeft);
             }
+            if (tab == 3)
+            {
+                g.setColour (t.sub); g.setFont (font (12.0f, true));
+                g.drawText (juce::String::fromUTF8 ("CALER LA DUR\xc3\x89" "E SUR (PAS, AU TEMPO DU PROJET)"), strFitLbl, juce::Justification::centredLeft);
+                auto base = ctx.proc.baseSet (lane); auto cur = ctx.proc.laneSet (lane);
+                auto secs = [] (const std::shared_ptr<typhon::SampleSet>& x) { auto* d = x ? x->display (0) : nullptr; return d ? d->length() / d->rate : 0.0; };
+                g.setColour (valueColour (t)); g.setFont (mono (12.0f));
+                g.drawText (ctx.proc.stretchRendering (lane) ? juce::String::fromUTF8 ("Calcul en cours\xe2\x80\xa6")
+                                                             : juce::String (secs (base), 2) + juce::String::fromUTF8 (" s \xe2\x86\x92 ") + juce::String (secs (cur), 2) + " s",
+                            strInfo, juce::Justification::centredLeft);
+                g.setColour (t.sub); g.setFont (font (12.0f));
+                g.drawFittedText (juce::String::fromUTF8 ("Simple : allonge sans changer la hauteur, garde le punch jusqu'\xc3\xa0 x4. "
+                                                         "Paulstretch : transforme le coup en nappe (x8 \xc3\xa0 x32). Fen\xc3\xaatre : grain fin \xe2\x86\x94 flou. "
+                                                         "Le calcul se fait hors du son, l'original est gard\xc3\xa9."),
+                                  strHelp, juce::Justification::topLeft, 4);
+            }
             if (tab == 1 && lockStep < 0)
             {
                 g.setColour (t.sub); g.setFont (font (11.0f));
@@ -624,10 +668,10 @@ namespace tui
             }
             r.removeFromTop (8);
             auto tb = r.removeFromTop (30);
-            const int tw = (tb.getWidth() - 18) / 4;
+            const int tw = (tb.getWidth() - 24) / 5;
             for (auto* b : tabs) { b->setBounds (tb.removeFromLeft (tw)); tb.removeFromLeft (6); }
             r.removeFromTop (8);
-            if (tab != 3)
+            if (tab != 4)
             {
                 auto wr = r.removeFromTop (tab == 2 ? 120 : 76);
                 wave.setBounds (wr);
@@ -673,6 +717,23 @@ namespace tui
                 sliceGo.setBounds (r.removeFromTop (34)); r.removeFromTop (6);
                 slicePat.setBounds (r.removeFromTop (38)); r.removeFromTop (8);
                 sliceHelp = r.removeFromTop (80);
+            }
+            else if (tab == 3)
+            {
+                auto row = r.removeFromTop (30);
+                const int w3 = (row.getWidth() - 12) / 3;
+                for (auto* b : strModes) { b->setBounds (row.removeFromLeft (w3)); row.removeFromLeft (6); }
+                r.removeFromTop (8);
+                auto kr = r.removeFromTop (84);
+                strAmt.setBounds (kr.removeFromLeft (kr.getWidth() / 2)); strWin.setBounds (kr);
+                r.removeFromTop (4);
+                strFitLbl = r.removeFromTop (18);
+                auto fr = r.removeFromTop (28);
+                const int w7 = (fr.getWidth() - 24) / 7;
+                for (auto* b : strFits) { b->setBounds (fr.removeFromLeft (w7)); fr.removeFromLeft (4); }
+                r.removeFromTop (8);
+                strInfo = r.removeFromTop (22);
+                strHelp = r.removeFromTop (70);
             }
             else dyn.setBounds (r);
         }
@@ -767,8 +828,17 @@ namespace tui
         juce::OwnedArray<Knob> sampleKnobs, grainKnobs;
         juce::OwnedArray<juce::AudioProcessorValueTreeState::ButtonAttachment> btnAtts;
         juce::OwnedArray<juce::AudioProcessorValueTreeState::ComboBoxAttachment> boxAtts;
-        juce::Rectangle<int> sliceHelp, sliceInfo, grainHint;
+        juce::Rectangle<int> sliceHelp, sliceInfo, grainHint, strFitLbl, strInfo, strHelp;
         std::unique_ptr<juce::FileChooser> chooser;
+        juce::OwnedArray<Pill> strModes, strFits;
+        Knob strAmt { ctx, "Facteur" }, strWin { ctx, juce::String::fromUTF8 ("Fen\xc3\xaatre") };
+        float param (const char* w) const { return ctx.proc.apvts.getRawParameterValue (typhon::pid (lane, w))->load(); }
+        void setChoice (const char* w, int idx)
+        {
+            if (auto* p = dynamic_cast<juce::AudioParameterChoice*> (ctx.proc.apvts.getParameter (typhon::pid (lane, w))))
+            { p->beginChangeGesture(); p->setValueNotifyingHost (p->convertTo0to1 ((float) idx)); p->endChangeGesture(); ctx.proc.undoCommit(); }
+            repaint();
+        }
     };
 
     // ------------------------------------------------------------------------

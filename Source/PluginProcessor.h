@@ -4,7 +4,7 @@
 #include "Shared.h"
 #include "Diag.h"
 #include "Library.h"
-#include "Apc.h"
+#include "ApcLink.h"
 
 class CaptureEngine;
 
@@ -70,6 +70,9 @@ public:
 
     std::shared_ptr<typhon::SampleSet> laneSet (int lane) const { return std::atomic_load (&sets[(size_t) lane]); }
     void setLaneSet (int lane, std::shared_ptr<typhon::SampleSet> s);
+    std::shared_ptr<typhon::SampleSet> baseSet (int lane) const { return std::atomic_load (&baseSets[(size_t) lane]); }   // avant stretch
+    bool stretchRendering (int lane) const { return stretchBusy[lane].load(); }
+    float stretchFactor (int lane) const { return stretchFactorNow[lane].load(); }
     juce::String laneSource (int lane) const { const juce::ScopedLock sl (srcLock); return laneSourceText[lane]; }
 
     bool loadSampleFile (int lane, const juce::File& f);      // glisser-déposer
@@ -117,8 +120,7 @@ public:
     static constexpr int cutAllNote = 24;   // C0 : coupe tous les sons
 
     // --- Akai APC64 (mode Custom, canal 16) ---
-    typhon::apc::Control apcCtl;
-    int apcSelectedLane() const { return apcCtl.selectedLane.load(); }
+    juce::String apcStatus() const { return apcLink ? apcLink->status() : juce::String(); }
 
 private:
     void timerCallback() override;
@@ -128,7 +130,21 @@ private:
     void trigger (int lane, int vel, int chokeMode, int64_t gateSamples, int step, int pitchOffset, bool stepRev = false);
     void renderLanes (int from, int to);
 
-    std::array<std::shared_ptr<typhon::SampleSet>, typhon::numLanes> sets;
+    std::array<std::shared_ptr<typhon::SampleSet>, typhon::numLanes> sets, baseSets;
+    void setPlayableSet (int lane, std::shared_ptr<typhon::SampleSet> s);
+    void updateStretch();
+    struct StretchKey
+    {
+        const typhon::SampleSet* base = nullptr; int mode = 0; double factor = 1.0; float win = 0.5f;
+        bool operator== (const StretchKey& o) const { return base == o.base && mode == o.mode && factor == o.factor && win == o.win; }
+    };
+    StretchKey stretchWant[typhon::numLanes];
+    double stretchChanged[typhon::numLanes] {};
+    bool stretchPending[typhon::numLanes] {};
+    std::atomic<int> stretchGen[typhon::numLanes] {};
+    std::atomic<bool> stretchBusy[typhon::numLanes] {};
+    std::atomic<float> stretchFactorNow[typhon::numLanes] {};
+    juce::ThreadPool stretchPool { 1 };
     std::vector<std::shared_ptr<typhon::SampleSet>> graveyard;   // libéré sur le fil principal
     juce::CriticalSection graveLock, srcLock;
     juce::String laneSourceText[typhon::numLanes];
@@ -195,21 +211,28 @@ private:
     bool prevBarWasFill = false;
     int64_t lastBarIndex = -1;
 
-    struct ApcPattern : typhon::apc::PatternAccess
+    // --- APC64 : la surface demande, le fil principal exécute ---
+    struct ApcHost : typhon::apc::Host
     {
-        typhon::Pattern& p; explicit ApcPattern (typhon::Pattern& x) : p (x) {}
-        bool stepOn (int l, int s) const override { return p.get (l, s).on() || p.headOf (l, s) >= 0; }
-        void setStep (int l, int s, int vel) override
-        {
-            const int h = p.headOf (l, s);
-            if (vel == 0 && h >= 0) { auto hs = p.get (l, h); hs.len = s - h; p.set (l, h, hs); return; }   // raccourcit la liaison
-            typhon::Step st; st.vel = vel; p.set (l, s, st);
-            if (vel == 0) p.clearLocks (l, s);
-        }
-        void clearLane (int l) override { for (int s = 0; s < typhon::numSteps; ++s) { p.set (l, s, typhon::Step()); p.clearLocks (l, s); } }
-    } apcPattern { pattern };
-    typhon::apc::Out apcOut;
-    int apcSpSeen = 0;
+        TyphonProcessor& p; explicit ApcHost (TyphonProcessor& x) : p (x) {}
+        typhon::apc::ActionQueue queue;
+        juce::RangedAudioParameter* stripParam (int strip, int lane) const;
+        int seqLen() const override { return p.seqLength(); }
+        bool muted (int l) const override { return p.lp[l].mute->load() > 0.5f; }
+        float stripValue (int s, int l) const override { auto* q = stripParam (s, l); return q ? q->getValue() : 0.0f; }
+        void toggleMute (int l) override { queue.push ({ typhon::apc::Act::toggleMute, 0, (int8_t) l }); }
+        void setStrip (int s, int l, float v) override { queue.push ({ typhon::apc::Act::setStrip, (int8_t) s, (int8_t) l, v }); }
+        void toggleSeqLen() override { queue.push ({ typhon::apc::Act::toggleSeqLen }); }
+        void audition (int l) override { p.audition (l); }
+        void cutAll() override { p.cutRequest.store (true); }
+        void undo() override { queue.push ({ typhon::apc::Act::undo }); }
+        void redo() override { queue.push ({ typhon::apc::Act::redo }); }
+        void commit() override { queue.push ({ typhon::apc::Act::commit }); }
+        std::string laneLabel (int l) const override;
+    } apcHost { *this };
+    std::unique_ptr<typhon::apc::Link> apcLink;
+    std::atomic<bool> cutRequest { false };
+    typhon::apc::Surface::Hit rollHits[64];
     void applyApcActions();
 
     std::unique_ptr<CaptureEngine> captureEngine;

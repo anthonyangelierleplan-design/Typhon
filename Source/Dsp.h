@@ -16,6 +16,9 @@
 #include <algorithm>
 #include <string>
 #include <limits>
+#include <complex>
+#include <random>
+#include <functional>
 
 namespace typhon
 {
@@ -784,6 +787,153 @@ namespace typhon
             if (pos > (int) (0.03 * s.rate)) out.push_back (pos);
         }
         std::sort (out.begin(), out.end());
+        return out;
+    }
+
+
+    // ------------------------------------------------------------------------
+    //  STRETCH (rendu hors ligne, jamais sur le fil audio)
+    //  mode 1 = simple : WSOLA, garde la hauteur, transitoires propres jusqu'à ~4x
+    //  mode 2 = Paulstretch : phases aléatoires sur de grandes fenêtres, nappes extrêmes
+    //  window01 : 0..1 = taille de fenêtre (simple 20..80 ms, Paul 60..500 ms)
+    // ------------------------------------------------------------------------
+    inline void fftInPlace (std::vector<std::complex<float>>& a, bool inverse)
+    {
+        const size_t n = a.size();
+        for (size_t i = 1, j = 0; i < n; ++i)
+        {
+            size_t bit = n >> 1;
+            for (; j & bit; bit >>= 1) j ^= bit;
+            j ^= bit;
+            if (i < j) std::swap (a[i], a[j]);
+        }
+        for (size_t len = 2; len <= n; len <<= 1)
+        {
+            const double ang = 2.0 * 3.14159265358979323846 / (double) len * (inverse ? 1.0 : -1.0);
+            const std::complex<float> wl ((float) std::cos (ang), (float) std::sin (ang));
+            for (size_t i = 0; i < n; i += len)
+            {
+                std::complex<float> w (1.0f, 0.0f);
+                for (size_t k = 0; k < len / 2; ++k)
+                {
+                    const auto u = a[i + k], v = a[i + k + len / 2] * w;
+                    a[i + k] = u + v; a[i + k + len / 2] = u - v;
+                    w *= wl;
+                }
+            }
+        }
+        if (inverse) for (auto& x : a) x /= (float) n;
+    }
+
+    inline int pow2Above (double x) { int n = 64; while (n < x && n < (1 << 18)) n <<= 1; return n; }
+
+    inline Sample stretchSample (const Sample& in, int mode, double factor, float window01,
+                                 const std::function<bool()>& cancelled = nullptr, double maxSeconds = 120.0)
+    {
+        Sample out; out.rate = in.rate;
+        const int len = (int) in.l.size();
+        if (len == 0 || mode == 0) return in;
+        factor = std::max (0.25, std::min (64.0, factor));
+        const bool stereo = ! in.r.empty();
+        const auto& L = in.l; const auto& R = stereo ? in.r : in.l;
+        const size_t outLen = (size_t) std::min ((double) len * factor + 8, maxSeconds * in.rate);
+        out.l.assign (outLen, 0.0f); out.r.assign (outLen, 0.0f);
+        auto at = [&] (const std::vector<float>& v, long i) { return (i >= 0 && i < (long) v.size()) ? v[(size_t) i] : 0.0f; };
+
+        if (mode == 1)
+        {
+            // WSOLA : fenêtres de Hann à 50 %, recherche de la meilleure continuité de forme d'onde
+            const int N = pow2Above (in.rate * (0.02 + 0.06 * window01)), Hs = N / 2, tol = N / 4;
+            std::vector<float> win ((size_t) N);
+            for (int i = 0; i < N; ++i) win[(size_t) i] = 0.5f - 0.5f * (float) std::cos (2.0 * 3.14159265358979323846 * i / N);
+            long prev = 0;
+            for (size_t k = 0; ; ++k)
+            {
+                const size_t o = k * (size_t) Hs;
+                if (o >= outLen) break;
+                if (cancelled && (k & 31) == 0 && cancelled()) return in;
+                const long ideal = (long) std::llround ((double) o / factor) - N / 2;
+                long best = ideal;
+                if (k > 0)
+                {
+                    const long natural = prev + Hs;
+                    double bestC = -1.0e30;
+                    for (long d = -tol; d <= tol; d += 2)
+                    {
+                        const long c = ideal + d;
+                        double acc = 0.0;
+                        for (int i = 0; i < N; i += 4)
+                            acc += (double) (at (L, natural + i) + at (R, natural + i)) * (at (L, c + i) + at (R, c + i));
+                        if (acc > bestC) { bestC = acc; best = c; }
+                    }
+                }
+                prev = best;
+                for (int i = 0; i < N; ++i)
+                {
+                    const long oi = (long) o + i - N / 2;
+                    if (oi < 0 || oi >= (long) outLen) continue;
+                    out.l[(size_t) oi] += at (L, best + i) * win[(size_t) i];
+                    out.r[(size_t) oi] += at (R, best + i) * win[(size_t) i];
+                }
+            }
+        }
+        else
+        {
+            // Paulstretch : spectre de chaque fenêtre gardé, phases tirées au hasard (mêmes phases à gauche et à droite)
+            const int N = pow2Above (in.rate * (0.06 + 0.44 * window01)), H = N / 2;
+            std::vector<float> win ((size_t) N);
+            for (int i = 0; i < N; ++i) { const double x = 2.0 * i / (N - 1) - 1.0; win[(size_t) i] = (float) std::pow (std::max (0.0, 1.0 - x * x), 1.25); }
+            std::mt19937 rng (12345u);
+            std::uniform_real_distribution<float> ph (0.0f, 6.2831853f);
+            std::vector<std::complex<float>> fl ((size_t) N), fr ((size_t) N);
+            double pos = -N / 2.0;
+            for (size_t o = 0; o < outLen + (size_t) N; o += (size_t) H)
+            {
+                if (cancelled && ((o / (size_t) H) & 15) == 0 && cancelled()) return in;
+                const long p = (long) std::floor (pos);
+                for (int i = 0; i < N; ++i) { fl[(size_t) i] = at (L, p + i) * win[(size_t) i]; fr[(size_t) i] = at (R, p + i) * win[(size_t) i]; }
+                fftInPlace (fl, false); fftInPlace (fr, false);
+                for (int i = 0; i <= N / 2; ++i)
+                {
+                    const auto rot = std::polar (1.0f, i == 0 || i == N / 2 ? 0.0f : ph (rng));
+                    fl[(size_t) i] = std::abs (fl[(size_t) i]) * rot; fr[(size_t) i] = std::abs (fr[(size_t) i]) * rot;
+                    if (i > 0 && i < N / 2) { fl[(size_t) (N - i)] = std::conj (fl[(size_t) i]); fr[(size_t) (N - i)] = std::conj (fr[(size_t) i]); }
+                }
+                fftInPlace (fl, true); fftInPlace (fr, true);
+                for (int i = 0; i < N; ++i)
+                {
+                    const long oi = (long) o + i - N / 2;
+                    if (oi < 0 || oi >= (long) outLen) continue;
+                    out.l[(size_t) oi] += fl[(size_t) i].real() * win[(size_t) i];
+                    out.r[(size_t) oi] += fr[(size_t) i].real() * win[(size_t) i];
+                }
+                pos += H / factor;
+            }
+        }
+        // niveau : même crête que l'original, petits fondus aux bords
+        float pin = 0.0f, pout = 0.0f;
+        for (int i = 0; i < len; ++i) pin = std::max ({ pin, std::fabs (L[(size_t) i]), std::fabs (R[(size_t) i]) });
+        for (size_t i = 0; i < outLen; ++i) pout = std::max ({ pout, std::fabs (out.l[i]), std::fabs (out.r[i]) });
+        const float g = pout > 1.0e-9f ? pin / pout : 0.0f;
+        const size_t fade = std::min (outLen / 4, (size_t) (0.004 * in.rate));
+        for (size_t i = 0; i < outLen; ++i)
+        {
+            float f = g;
+            if (i >= outLen - fade) f *= (float) (outLen - i) / (float) std::max<size_t> (1, fade);
+            out.l[i] *= f; out.r[i] *= f;
+        }
+        if (! stereo) out.r.clear();
+        return out;
+    }
+
+    inline std::shared_ptr<SampleSet> stretchSet (const SampleSet& in, int mode, double factor, float window01,
+                                                 const std::function<bool()>& cancelled = nullptr)
+    {
+        auto out = std::make_shared<SampleSet>();
+        out->name = in.name; out->layerTopVel = in.layerTopVel;
+        auto one = [&] (const std::shared_ptr<Sample>& s) { return s ? std::make_shared<Sample> (stretchSample (*s, mode, factor, window01, cancelled)) : s; };
+        for (auto& layer : in.layers) { std::vector<std::shared_ptr<Sample>> v; for (auto& s : layer) v.push_back (one (s)); out->layers.push_back (v); }
+        for (auto& var : in.variants) { std::vector<std::shared_ptr<Sample>> v; for (auto& s : var) v.push_back (one (s)); out->variants.push_back (v); }
         return out;
     }
 

@@ -57,6 +57,7 @@ target_link_libraries(Typhon
     PRIVATE
         juce::juce_audio_processors
         juce::juce_audio_formats
+        juce::juce_audio_devices
         juce::juce_gui_basics
     PUBLIC
         juce::juce_recommended_config_flags

@@ -143,6 +143,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout TyphonProcessor::createLayou
         grp->addChild (std::make_unique<AudioParameterBool> (ParameterID { pid (i, "gfreeze"), 1 }, n + "Grain freeze", false));
         grp->addChild (std::make_unique<AudioParameterInt> (ParameterID { pid (i, "var"), 1 }, n + "Variante", 1, 16, 1));
         grp->addChild (std::make_unique<AudioParameterBool> (ParameterID { pid (i, "steplen"), 1 }, n + juce::String::fromUTF8 ("Dur\xc3\xa9" "e limit\xc3\xa9" "e au pas"), false));
+        grp->addChild (std::make_unique<AudioParameterChoice> (ParameterID { pid (i, "strmode"), 1 }, n + "Stretch mode", StringArray { "Off", "Simple", "Paulstretch" }, 0));
+        grp->addChild (f (pid (i, "stramt"), n + "Stretch facteur", 0.5f, 32.0f, 1.0f, 4.0f));
+        grp->addChild (f (pid (i, "strwin"), n + juce::String::fromUTF8 ("Stretch fen\xc3\xaatre"), 0.0f, 1.0f, 0.5f));
+        grp->addChild (std::make_unique<AudioParameterChoice> (ParameterID { pid (i, "strfit"), 1 }, n + "Stretch calage", StringArray { "Libre", "1 pas", "2 pas", "4 pas", "8 pas", "16 pas", "32 pas" }, 0));
         L.add (std::move (grp));
     }
     L.add (f ("swing", "Swing", 0.5f, 0.75f, 0.5f));
@@ -205,6 +209,7 @@ TyphonProcessor::TyphonProcessor()
         hitCounter[i].store (0);
         captureNotes[i].store (captureNoteDefault[i]);
         sets[(size_t) i] = makeFallback (i);
+        baseSets[(size_t) i] = sets[(size_t) i];
         laneSourceText[i] = "Secours";
     }
     pSwing = apvts.getRawParameterValue ("swing");
@@ -242,58 +247,98 @@ TyphonProcessor::TyphonProcessor()
 TyphonProcessor::~TyphonProcessor()
 {
     stopTimer();
+    apcLink.reset();   // rend l'APC64 (sortie du mode DAW)
+    for (auto& g : stretchGen) g.fetch_add (1);   // annule les rendus en cours
+    stretchPool.removeAllJobs (true, 10000);
     captureEngine.reset();
     watchdog.reset();
     diag::removeCrashHandler();
+}
+
+juce::RangedAudioParameter* TyphonProcessor::ApcHost::stripParam (int strip, int lane) const
+{
+    static const char* g[4] = { "sp_amt", "sp_bits", "sp_rate", "sp_filt" };
+    static const char* l[3] = { "fcut", "decay", "pitch" };
+    if (strip < 4) return p.apvts.getParameter (g[strip]);
+    if (strip < 7) return p.apvts.getParameter (pid (juce::jlimit (0, numLanes - 1, lane), l[strip - 4]));
+    return p.apvts.getParameter ("swing");
+}
+
+std::string TyphonProcessor::ApcHost::laneLabel (int lane) const
+{
+    // écran de l'APC64 : ASCII seulement
+    auto s = laneShortName (lane).toUpperCase();
+    juce::String o;
+    for (auto c : s) { const juce::juce_wchar m = c == 0xC9 || c == 0xC8 ? 'E' : (c < 128 ? c : '?'); o += juce::String::charToString (m); }
+    return o.toStdString();
 }
 
 void TyphonProcessor::applyApcActions()
 {
     using namespace typhon::apc;
     Action a; bool commit = false;
-    auto param = [&] (const Action& x) -> juce::RangedAudioParameter*
+    while (apcHost.queue.pop (a))
     {
-        const int l = juce::jlimit (0, numLanes - 1, (int) x.lane);
-        switch ((Target) x.target)
-        {
-            case tSpAmt: return apvts.getParameter ("sp_amt");
-            case tSpBits: return apvts.getParameter ("sp_bits");
-            case tSpRate: return apvts.getParameter ("sp_rate");
-            case tSpFilt: return apvts.getParameter ("sp_filt");
-            case tLaneCut: return apvts.getParameter (pid (l, "fcut"));
-            case tLaneDecay: return apvts.getParameter (pid (l, "decay"));
-            case tLanePitch: return apvts.getParameter (pid (l, "pitch"));
-            case tSwing: return apvts.getParameter ("swing");
-            case tLaneMute: return apvts.getParameter (pid (l, "mute"));
-            case tChokeAll: return apvts.getParameter ("choke_all");
-            case tSeqLen: return apvts.getParameter ("seq_len");
-        }
-        return nullptr;
-    };
-    while (apcCtl.queue.pop (a))
-    {
+        auto gesture = [] (juce::RangedAudioParameter* p, float v) { if (p) { p->beginChangeGesture(); p->setValueNotifyingHost (juce::jlimit (0.0f, 1.0f, v)); p->endChangeGesture(); } };
         switch (a.act)
         {
-            case Act::setParam:
-                if (auto* p = param (a)) { p->beginChangeGesture(); p->setValueNotifyingHost (juce::jlimit (0.0f, 1.0f, a.value)); p->endChangeGesture(); commit = true; }
-                break;
-            case Act::toggleParam:
-                if (auto* p = param (a)) { p->beginChangeGesture(); p->setValueNotifyingHost (p->getValue() > 0.5f ? 0.0f : 1.0f); p->endChangeGesture(); }
-                break;
+            case Act::setStrip: gesture (apcHost.stripParam (a.index, a.lane), a.value); commit = true; break;
+            case Act::toggleMute: { auto* p = apvts.getParameter (pid (a.lane, "mute")); gesture (p, p->getValue() > 0.5f ? 0.0f : 1.0f); break; }
+            case Act::toggleSeqLen: { auto* p = apvts.getParameter ("seq_len"); gesture (p, p->getValue() > 0.5f ? 0.0f : 1.0f); commit = true; break; }
             case Act::commit: commit = true; break;
             case Act::undo: undo(); commit = false; break;
             case Act::redo: redo(); commit = false; break;
-            default: break;
         }
     }
-    const int sp = apcCtl.spModeToggle.load();
-    if (sp != apcSpSeen) { if ((sp - apcSpSeen) & 1) { settings.spMode.store (1 - settings.spMode.load()); settings.save(); } apcSpSeen = sp; }
     if (commit) undoCommit();
+    if (apcLink == nullptr && settings.apcOn.load() == 1) apcLink = std::make_unique<Link> (pattern, apcHost);
+    if (apcLink != nullptr) apcLink->tick (settings.apcOn.load() == 1, isPlayingNow.load() ? curStep.load() : -1);
+}
+
+// Stretch : rendu hors ligne sur un fil à part, 250 ms après le dernier réglage
+void TyphonProcessor::updateStretch()
+{
+    const double now = juce::Time::getMillisecondCounterHiRes();
+    static const int fitSteps[7] = { 0, 1, 2, 4, 8, 16, 32 };
+    for (int l = 0; l < numLanes; ++l)
+    {
+        auto base = std::atomic_load (&baseSets[(size_t) l]);
+        auto& ap = apvts;
+        StretchKey k;
+        k.base = base.get();
+        k.mode = (int) ap.getRawParameterValue (pid (l, "strmode"))->load();
+        k.win = ap.getRawParameterValue (pid (l, "strwin"))->load();
+        double factor = ap.getRawParameterValue (pid (l, "stramt"))->load();
+        const int fit = fitSteps[juce::jlimit (0, 6, (int) ap.getRawParameterValue (pid (l, "strfit"))->load())];
+        if (k.mode > 0 && fit > 0 && base != nullptr)
+            if (auto* d = base->display (0))
+                if (d->length() > 0) factor = (fit * 15.0 / std::max (20.0, lastBpm.load())) / (d->length() / d->rate);
+        k.factor = std::round (juce::jlimit (0.25, 64.0, factor) * 100.0) / 100.0;
+        stretchFactorNow[l].store ((float) k.factor);
+        if (! (k == stretchWant[l])) { stretchWant[l] = k; stretchChanged[l] = now; stretchPending[l] = true; stretchGen[l].fetch_add (1); }
+        if (! stretchPending[l] || now - stretchChanged[l] < 250.0) continue;
+        stretchPending[l] = false;
+        if (k.mode == 0 || base == nullptr || std::fabs (k.factor - 1.0) < 0.005)
+        {
+            if (std::atomic_load (&sets[(size_t) l]) != base) setPlayableSet (l, base);
+            stretchBusy[l].store (false);
+            continue;
+        }
+        stretchBusy[l].store (true);
+        const int g = stretchGen[l].load();
+        stretchPool.addJob ([this, l, g, base, k]
+        {
+            auto cancelled = [this, l, g] { return stretchGen[l].load() != g; };
+            auto out = stretchSet (*base, k.mode, k.factor, k.win, cancelled);
+            if (! cancelled()) { setPlayableSet (l, out); stretchBusy[l].store (false); }
+        });
+    }
 }
 
 void TyphonProcessor::timerCallback()
 {
     applyApcActions();
+    updateStretch();
     // libère les anciens jeux de samples quand plus aucune voix ne les tient
     const juce::ScopedLock sl (graveLock);
     graveyard.erase (std::remove_if (graveyard.begin(), graveyard.end(),
@@ -304,6 +349,13 @@ void TyphonProcessor::timerCallback()
 void TyphonProcessor::setLaneSet (int lane, std::shared_ptr<SampleSet> s)
 {
     if (s == nullptr || lane < 0 || lane >= numLanes) return;
+    std::atomic_store (&baseSets[(size_t) lane], s);   // l'original ; le stretch (s'il est actif) est recalculé dans la foulée
+    setPlayableSet (lane, s);
+}
+
+void TyphonProcessor::setPlayableSet (int lane, std::shared_ptr<SampleSet> s)
+{
+    if (s == nullptr) return;
     auto old = std::atomic_exchange (&sets[(size_t) lane], s);
     const juce::ScopedLock sl (graveLock);
     if (old != nullptr) graveyard.push_back (old);
@@ -414,7 +466,7 @@ juce::File TyphonProcessor::saveUserKit (const juce::String& wanted)
     kit.setAttribute ("user", 1);
     for (int l = 0; l < numLanes; ++l)
     {
-        auto set = laneSet (l);
+        auto set = baseSet (l);
         if (set == nullptr || set->empty()) continue;
         auto* lx = kit.createNewChildElement ("LANE");
         lx->setAttribute ("index", l);
@@ -620,19 +672,10 @@ void TyphonProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     // 1) MIDI
     const int chan = settings.midiChannel.load();
     const int map = juce::jlimit (0, 2, settings.midiMap.load());
-    const bool apcOn = settings.apcOn.load() == 1;
-    apcOut.numHits = 0; apcOut.cutAll = false;
+    const bool apcOn = settings.apcOn.load() == 1 && apcLink != nullptr && apcLink->active();
     for (const auto m : midi)
     {
         const auto msg = m.getMessage();
-        if (apcOn && msg.getChannel() == typhon::apc::channel)
-        {
-            if (msg.isNoteOn()) apcCtl.noteOn (msg.getNoteNumber(), msg.getVelocity(), m.samplePosition, apcPattern, seqLength(), apcOut);
-            else if (msg.isNoteOff()) apcCtl.noteOff (msg.getNoteNumber());
-            else if (msg.isAftertouch()) apcCtl.aftertouch (msg.getNoteNumber(), msg.getAfterTouchValue());
-            else if (msg.isController()) apcCtl.controller (msg.getControllerNumber(), msg.getControllerValue());
-            continue;
-        }
         if (chan != 0 && msg.getChannel() != chan) continue;
         if (msg.isNoteOn() && msg.getNoteNumber() == cutAllNote) { addEv (m.samplePosition, -1, 0, 0, -1); continue; }
         if (msg.isNoteOff())
@@ -645,8 +688,7 @@ void TyphonProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         for (int l = 0; l < numLanes; ++l)
             if (midiMaps[map][l] == msg.getNoteNumber()) addEv (m.samplePosition, l, msg.getVelocity(), 0, -1);
     }
-    if (apcOut.cutAll) addEv (0, -1, 0, 0, -1);
-    for (int k = 0; k < apcOut.numHits; ++k) addEv (apcOut.hits[k].offset, apcOut.hits[k].lane, apcOut.hits[k].vel, 0, -1);
+    if (cutRequest.exchange (false)) addEv (0, -1, 0, 0, -1);
 
     // Page CAPTURE ouverte : EZdrummer tourne en continu (son moteur reste actif), s'entend et reçoit les notes
     if (captureEngine != nullptr && captureEngine->monitor.load())
@@ -693,7 +735,7 @@ void TyphonProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         const double swing = pSwing->load();
         const int len = seqLength();
         const double loopPpq = len * 0.25;
-        const bool manualFill = pFill->load() > 0.5f || (apcOn && apcCtl.fillHeld.load());
+        const bool manualFill = pFill->load() > 0.5f || (apcOn && apcLink->surface.fillHeld.load());
         const int autoEvery = (int) pFillAuto->load() == 1 ? 4 : ((int) pFillAuto->load() == 2 ? 8 : 0);
         auto barIsFill = [&] (int64_t bar) { return manualFill || (autoEvery > 0 && bar >= 0 && (bar % autoEvery) == autoEvery - 1); };
         FillOptions fo;
@@ -719,16 +761,22 @@ void TyphonProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
                     HitList h; Step s; bool fromFill = false;
                     if (fill && fillHits (fo, lane, posInBar, h)) fromFill = true;
                     else { s = pattern.get (lane, st); if (! s.on()) continue; h = hitsOf (s); }
+                    // pas fusionnés = un seul grand pas : ratchet et division se répartissent sur toute sa longueur
+                    const double span = fromFill ? 1.0 : (double) std::max (1, s.len);
                     for (int k = 0; k < h.count; ++k)
                     {
-                        const double t = stepPpq + (swingOffset (st, swing) + h.at[k]) * 0.25;
+                        const double t = stepPpq + (swingOffset (st, swing) + h.at[k] * span) * 0.25;
                         if (t < p0 || t >= p1) continue;
                         // durée : liaison = jusqu'au bout des pas fusionnés ; option « durée limitée au pas » = le son s'arrête à la fin de son pas
                         // (ou de sa part de pas pour un ratchet / un pas divisé, ou de son coup de fill)
                         int64_t gate = -1;
                         const bool limit = fromFill ? lp[lane].steplen->load() > 0.5f
                                                     : (s.dur == 1 || (s.dur == 0 && lp[lane].steplen->load() > 0.5f));
-                        if (! fromFill && s.len > 1) gate = (int64_t) ((s.len * 0.25 - h.at[k] * 0.25) / ppqPerSample);
+                        if (! fromFill && s.len > 1)
+                        {
+                            const double next = k + 1 < h.count ? h.at[k + 1] : 1.0;
+                            gate = (int64_t) ((next - h.at[k]) * span * 0.25 / ppqPerSample);
+                        }
                         else if (limit)
                         {
                             const double next = k + 1 < h.count ? h.at[k + 1] : 1.0;
@@ -752,9 +800,8 @@ void TyphonProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     // ROLL de l'APC64 : calé sur la grille quand Ableton joue, horloge libre au tempo sinon
     if (apcOn)
     {
-        apcOut.numHits = 0;
-        apcCtl.renderRoll (playing, ppq, bpm / 60.0 / sr, n, apcOut);
-        for (int k = 0; k < apcOut.numHits; ++k) addEv (apcOut.hits[k].offset, apcOut.hits[k].lane, apcOut.hits[k].vel, 0, -1);
+        const int nh = apcLink->surface.renderRoll (playing, ppq, bpm / 60.0 / sr, n, rollHits, 64);
+        for (int k = 0; k < nh; ++k) addEv (rollHits[k].offset, rollHits[k].lane, rollHits[k].vel, 0, -1);
     }
 
     diag::audio ("rendu des voix");

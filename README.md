@@ -65,30 +65,27 @@ GitHub Actions compile le VST3 Windows à chaque push (release `latest`, fichier
 En local : `cmake -B build && cmake --build build --config Release`.
 Tests : voir `tools/tests/LISEZMOI.txt`.
 
-## Akai APC64 (mode Custom)
+## Akai APC64 : la grille 8×8 devient le séquenceur
 
-Typhon se pilote depuis l'APC64 en **mode Custom**, sur le **canal 16**.
+Typhon ouvre lui-même l'APC64 et le passe en mode DAW, comme Ableton le fait : les pas s'allument, la tête de lecture défile.
 
-**Réglage dans l'APC64 Project Editor (une seule fois)**
-1. Glisser 4 groupes **Drum Pads** (4×4) sur la grille, canal 16 :
-   bas-gauche = note **36** (C1 dans Ableton), bas-droite = **52** (E2), haut-gauche = **68** (G#3), haut-droite = **84** (C5).
-2. Les 8 touch faders : *Single (1 CC)*, canal 16, **CC 20 à 27**.
-3. Couleurs conseillées (Pad Off) : rangée 1 orange, rangée 2 gris, rangée 3 bleu, rangée 4 blanc, 4 rangées du haut gris foncé.
-4. *Send Project* vers un slot de l'APC64.
+**Réglage** : dans Ableton, Préférences > Link/Tempo/MIDI, mets la surface de contrôle APC64 sur « Aucun » (et les ports APC64 sans Piste ni Télécommande). Dans Typhon : Paramètres > Akai APC64 > On. Repasse sur Off pour rendre l'APC64 à Ableton.
 
-**Dans Ableton** : une piste MIDI « APC → Typhon », entrée = APC64 canal 16, Monitor = In, sortie = la piste de Typhon.
-Dans Typhon : Paramètres → Akai APC64 → On.
+| Commande | Effet |
+|---|---|
+| Scène 1 · PISTES | 8 pistes × 8 pas (rangée du haut = Kick) · ◀ ▶ = page de 8 pas |
+| Scène 2 · PISTE | les 32 pas de la piste choisie en haut ; rangée 4 = vélocité ; rangée 3 = ratchet 1-4, division, reverse, pitch −/+ du dernier pas touché ; rangée 2 = jouer les pistes ; rangée 1 = mutes |
+| Scène 3 / 4 | 16/32 pas · suivre la lecture |
+| Scène 5 (maintenir) | FILL |
+| Scènes 6-8 (maintenir) | ROLL 1/8, 1/16, 1/32 sur la piste choisie |
+| Boutons de piste | choisir la piste (bouton Mute allumé : muter) · ▲ ▼ = piste précédente / suivante |
+| Shift + pad | accent / note fantôme |
+| Clear maintenu + pad ou piste | effacer la piste |
+| Duplicate | recopier la page sur la suivante (ou 1-16 → 17-32) |
+| Undo / Shift + Undo | annuler / rétablir |
+| Stop | couper tous les sons |
+| Touch strips | Grain SP · Bits · Fréquence · Filtre SP · Filtre, Decay, Pitch de la piste · Swing |
 
-**La grille (rangée 1 = en bas)**
+## Stretch
 
-| Rangée | Pads 1-4 | Pads 5-8 |
-|---|---|---|
-| 8 → 5 | les 32 pas de la piste sélectionnée (rangée 8 = pas 1-8 … rangée 5 = pas 25-32) | |
-| 4 | vélocité d'écriture : Doux · Normal · Accent · Au toucher | Effacer la piste · Annuler · Rétablir · 16/32 pas |
-| 3 | ROLL (maintenir) 1/8 · 1/16 · 1/32 · 1/16T | FILL (maintenir) · Choke global · Couper tout · SP Authentique/Propre |
-| 2 | Mute pistes 1-4 | Mute pistes 5-8 |
-| 1 | jouer Kick · Snare · Ghost · Rim | jouer Hat fermé · Hat ouvert · Crash · Perc |
-
-Jouer une piste la sélectionne. Roll : maintenir une cadence + un ou plusieurs pads de piste ; calé sur la grille quand Ableton joue, au tempo sinon ; l'aftertouch du pad règle la force du roll.
-
-**Faders** : Grain SP · Bits · Fréquence · Filtre SP | Filtre · Decay · Pitch de la piste sélectionnée | Swing.
+Onglet STRETCH de chaque piste : **Simple** (allonge sans changer la hauteur) ou **Paulstretch** (nappes extrêmes), facteur ×0,5 à ×32, taille de fenêtre, ou calage sur 1 à 32 pas au tempo du projet. Le calcul se fait hors du fil audio ; l'original reste gardé.

@@ -91,34 +91,21 @@ int main (int argc, char** argv)
         auto tail = run (p, h, 0.2);
         CHECK (tail.peak < 1.0e-4f, "MIDI : C0 coupe le crash (reste %.6f)", tail.peak);
 
-        // APC64 (canal 16) : pad de piste, ROLL maintenu, écriture d'un pas
-        p.settings.apcOn.store (1);
+        // pas fusionnés + ratchet : un seul grand pas, coups répartis sur toute sa longueur
         {
-            const auto s0 = totalHits (p, 1);
-            juce::MidiBuffer a; a.addEvent (juce::MidiMessage::noteOn (16, 37, (juce::uint8) 100), 0); a.addEvent (juce::MidiMessage::noteOff (16, 37), 100);
-            run (p, h, 0.05, &a);
-            CHECK (totalHits (p, 1) == s0 + 1, "APC64 : pad 2 en bas joue la snare");
-            juce::MidiBuffer r; r.addEvent (juce::MidiMessage::noteOn (16, 45, (juce::uint8) 127), 0); r.addEvent (juce::MidiMessage::noteOn (16, 37, (juce::uint8) 90), 1);
-            const auto s1 = totalHits (p, 1);
-            run (p, h, 0.05, &r); run (p, h, 0.95);
-            juce::MidiBuffer off; off.addEvent (juce::MidiMessage::noteOff (16, 37), 0); off.addEvent (juce::MidiMessage::noteOff (16, 45), 0);
-            run (p, h, 0.05, &off);
-            const auto rolled = totalHits (p, 1) - s1;
-            const auto s2 = totalHits (p, 1); run (p, h, 0.5);
-            CHECK (rolled >= 6 && rolled <= 10 && totalHits (p, 1) == s2, "APC64 : roll 1/16 maintenu 1 s = %u coups, s'arrête au relâchement", rolled);
-            const bool was = p.pattern.get (1, 2).on();
-            juce::MidiBuffer w; w.addEvent (juce::MidiMessage::noteOn (16, 82, (juce::uint8) 100), 0);   // rangée du haut, 3e pad
-            run (p, h, 0.02, &w);
-            CHECK (p.pattern.get (1, 2).on() != was, "APC64 : pad du haut = bascule le pas 3 de la piste sélectionnée");
-            run (p, h, 0.02, &w);
-            CHECK (p.pattern.get (1, 2).on() == was, "APC64 : second appui = retour à l'état d'origine");
-            const auto k1 = totalHits (p, 0);
-            juce::MidiBuffer n1; n1.addEvent (juce::MidiMessage::noteOn (16, 36, (juce::uint8) 100), 0);
-            run (p, h, 0.02, &n1);
-            CHECK (totalHits (p, 0) == k1 + 1, "APC64 : le canal 16 ne passe plus par la carte de notes");
+            auto saved = p.pattern.get (2, 0);
+            for (int st = 0; st < 32; ++st) p.pattern.set (2, st, typhon::Step());
+            typhon::Step tr; tr.vel = 100; tr.len = 4; tr.ratchet = 2; p.pattern.set (2, 0, tr);
+            h.playing = true; h.ppq = 0.0;
+            const auto g0 = totalHits (p, 2);
+            run (p, h, 0.2);                       // 120 BPM : 2e coup attendu à 0,25 s (milieu des 4 pas), pas à 0,0625 s
+            const auto early = totalHits (p, 2) - g0;
+            run (p, h, 0.3);
+            const auto both = totalHits (p, 2) - g0;
+            CHECK (early == 1 && both == 2, "pas fusionnés x4 + ratchet x2 : coups au pas 1 et au pas 3 (%u puis %u)", early, both);
+            p.pattern.set (2, 0, saved); h.playing = false;
+            run (p, h, 0.06, &cut); run (p, h, 0.2);
         }
-        p.settings.apcOn.store (0);
-        run (p, h, 0.06, &cut); run (p, h, 0.2);
 
         // gate MIDI : note courte = son court
         setParam (p, typhon::pid (6, "gate"), 1.0f);
@@ -303,6 +290,15 @@ int main (int argc, char** argv)
             CHECK (k2.loadKitFolder (kf) && k2.laneVariants (0) == 5 && k2.laneSource (0) == p.laneSource (0) && k2.laneSource (4) == lbl4,
                    "Mes kits : rechargé avec variantes et noms des pistes (%s / %s)", k2.laneSource (0).toRawUTF8(), k2.laneSource (4).toRawUTF8());
             kf.deleteRecursively();
+            // stretch : rendu hors ligne, l'original est gardé
+            setParam (p, typhon::pid (4, "strmode"), 1.0f); setParam (p, typhon::pid (4, "stramt"), 2.0f);
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (900);
+            for (int w = 0; w < 40 && p.stretchRendering (4); ++w) juce::MessageManager::getInstance()->runDispatchLoopUntil (100);
+            auto len = [] (std::shared_ptr<typhon::SampleSet> x) { auto* d = x->display (0); return d ? d->length() : 0; };
+            CHECK (std::abs (len (p.laneSet (4)) - 2 * len (p.baseSet (4))) < 2000, "stretch simple x2 sur la piste : %d -> %d échantillons", len (p.baseSet (4)), len (p.laneSet (4)));
+            setParam (p, typhon::pid (4, "strmode"), 0.0f);
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (600);
+            CHECK (p.laneSet (4) == p.baseSet (4), "stretch Off : retour à l'original");
         }
     }
 
@@ -398,6 +394,7 @@ int main (int argc, char** argv)
                 if (auto* b = dynamic_cast<juce::Button*> (findBtn (ui, "DYN"))) { b->triggerClick(); juce::MessageManager::getInstance()->runDispatchLoopUntil (50); shot ("seq_dyn.png"); }
                 if (auto* b = dynamic_cast<juce::Button*> (findBtn (ui, "GRAIN"))) { b->triggerClick(); juce::MessageManager::getInstance()->runDispatchLoopUntil (50); shot ("seq_grain.png"); }
                 if (auto* b = dynamic_cast<juce::Button*> (findBtn (ui, "SLICE"))) { b->triggerClick(); juce::MessageManager::getInstance()->runDispatchLoopUntil (50); shot ("seq_slice.png"); }
+                if (auto* b = dynamic_cast<juce::Button*> (findBtn (ui, "STRETCH"))) { b->triggerClick(); juce::MessageManager::getInstance()->runDispatchLoopUntil (50); shot ("seq_stretch.png"); }
                 if (auto* b = dynamic_cast<juce::Button*> (findBtn (ui, "SAMPLE"))) { b->triggerClick(); juce::MessageManager::getInstance()->runDispatchLoopUntil (50); }
                 if (auto* b = dynamic_cast<juce::Button*> (findBtn (ui, "32 PAS"))) { b->triggerClick(); juce::MessageManager::getInstance()->runDispatchLoopUntil (50); shot ("seq_32.png"); }
                 if (auto* b = dynamic_cast<juce::Button*> (findBtn (ui, juce::String::fromUTF8 ("\xe2\xa4\xa2 AGRANDIR")))) { b->triggerClick(); juce::MessageManager::getInstance()->runDispatchLoopUntil (50); shot ("editor.png"); }

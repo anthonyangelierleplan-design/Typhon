@@ -186,52 +186,90 @@ int main()
         CHECK ((int) sl4.size() == 4, "slice : limité à 4 tranches (%d)", (int) sl4.size());
     }
 
-    // APC64 : plan de la grille, écriture des pas, roll, faders
+    // APC64 en mode DAW : la grille 8x8 = séquenceur
     {
         using namespace typhon::apc;
-        bool ok = true; int seen[64] = {};
-        for (int n = 36; n < 100; ++n) { int c, r; ok &= padPos (n, c, r) && noteAt (c, r) == n; seen[r * 8 + c]++; }
-        for (int k = 0; k < 64; ++k) ok &= seen[k] == 1;
-        int c, r; padPos (36, c, r); ok &= c == 0 && r == 0; padPos (99, c, r); ok &= c == 7 && r == 7; padPos (52, c, r); ok &= c == 4 && r == 0;
-        CHECK (ok && ! padPos (35, c, r) && ! padPos (100, c, r), "apc : 4 groupes Drum Pads = grille 8x8 complète, sans trou ni doublon");
-        CHECK (stepOf (0, 7) == 0 && stepOf (7, 7) == 7 && stepOf (0, 4) == 24 && stepOf (7, 4) == 31, "apc : rangée du haut = pas 1-8, rangée 4 = pas 25-32");
+        struct H : Host
+        {
+            int len = 16; bool mu[8] {}; int aud = -1, commits = 0, undos = 0; float strip[8] {}; int stripLane = -1;
+            int seqLen() const override { return len; } bool muted (int l) const override { return mu[l]; }
+            float stripValue (int s, int) const override { return strip[s]; }
+            void toggleMute (int l) override { mu[l] = ! mu[l]; } void setStrip (int s, int l, float v) override { strip[s] = v; stripLane = l; }
+            void toggleSeqLen() override { len = len == 16 ? 32 : 16; } void audition (int l) override { aud = l; } void cutAll() override {}
+            void undo() override { ++undos; } void redo() override {} void commit() override { ++commits; }
+            std::string laneLabel (int) const override { return "SNARE"; }
+        } h;
+        Pattern pat; Surface sf;
+        auto press = [&] (int note, int ch = 6) { uint8_t m[3] = { (uint8_t) (0x90 | ch), (uint8_t) note, 127 }; sf.handle (m, 3, pat, h); };
+        auto release = [&] (int note) { uint8_t m[3] = { 0x80, (uint8_t) note, 0 }; sf.handle (m, 3, pat, h); };
+        // vue PISTES : rangée du haut = kick, colonne 0 = pas 1
+        press (56); CHECK (pat.get (0, 0).on(), "apc : pad en haut à gauche = kick pas 1");
+        press (56); CHECK (! pat.get (0, 0).on(), "apc : second appui efface");
+        press (1); CHECK (pat.get (7, 1).on(), "apc : rangée du bas = perc");
+        press (nRight, 0); press (56 + 3); CHECK (pat.get (0, 11).on() && sf.page.load() == 1, "apc : page 2 = pas 9-16");
+        press (nShift, 0); press (56 + 3); release (nShift);
+        CHECK (pat.get (0, 11).vel == 120, "apc : Shift + pad = accent (%d)", pat.get (0, 11).vel);
+        press (nRight, 0); CHECK (sf.page.load() == 1, "apc : pas de page 3 en 16 pas");
+        // vue PISTE : 32 pas de la snare, réglages du dernier pas
+        press (nTrack0 + 1, 0); press (nScene0 + 1, 0);
+        CHECK (sf.view.load() == 1 && sf.selLane.load() == 1, "apc : bouton de piste 2 + scène 2 = vue PISTE snare");
+        press (63); press (4 * 8 + 0);
+        CHECK (pat.get (1, 7).on() && ! pat.get (1, 24).on(), "apc : vue PISTE, rangée du haut = pas 1-8 ; pas 25 ignoré en 16 pas");
+        Step t; t.vel = 100; pat.set (1, 4, t); sf.lastStep.store (4);
+        press (2 * 8 + 2); CHECK (pat.get (1, 4).ratchet == 3, "apc : rangée 3, pad 3 = ratchet x3 du dernier pas");
+        press (2 * 8 + 7); press (2 * 8 + 7); CHECK (pat.get (1, 4).pitch == 2, "apc : pitch +2");
+        press (3 * 8 + 1); CHECK (pat.get (1, 4).vel == 31, "apc : rangée 4 = vélocité du dernier pas (%d)", pat.get (1, 4).vel);
+        press (1 * 8 + 5); CHECK (h.aud == 5 && sf.selLane.load() == 5, "apc : rangée 2 = jouer la piste");
+        press (0 * 8 + 2); CHECK (h.mu[2], "apc : rangée du bas = mute");
+        // liaison coupée par un pad au milieu
+        pat.clear(); Step tie; tie.vel = 100; tie.len = 4; pat.set (5, 0, tie);
+        press (7 * 8 + 2); CHECK (pat.get (5, 0).len == 2 && pat.get (5, 2).on(), "apc : pad dans une liaison = coupe la liaison et pose un pas");
+        // duplicate : 1re moitié -> 2e, passe en 32 pas
+        press (nDuplicate, 0); CHECK (h.len == 32 && pat.get (5, 18).on(), "apc : Duplicate recopie 1-16 sur 17-32");
+        // Clear maintenu + bouton de piste
+        press (nClear, 0); press (nTrack0 + 5, 0); release (nClear);
+        CHECK (! pat.get (5, 2).on() && ! pat.get (5, 18).on(), "apc : Clear + piste = efface la piste");
+        // strips (pitch bend 14 bits)
+        uint8_t pb[3] = { 0xE1, 0x7F, 0x7F }; sf.handle (pb, 3, pat, h);
+        CHECK (h.strip[1] > 0.999f, "apc : strip 2 = Bits");
+        // vue Session perdue / retrouvée
+        uint8_t rep[9] = { 0xF0, 0x47, 0x00, 0x53, 0x19, 0x00, 0x01, 0x02, 0xF7 }; sf.handle (rep, 9, pat, h);
+        CHECK (! sf.sessionView.load(), "apc : vue Note de l'APC64 détectée");
+        rep[7] = 0; sf.handle (rep, 9, pat, h); CHECK (sf.sessionView.load(), "apc : retour en vue Session");
+        // image : tête de lecture blanche, pas actifs couleur de piste
+        sf.view.store (0); sf.page.store (0); pat.clear(); Step k; k.vel = 127; pat.set (0, 0, k);
+        Frame f; sf.render (pat, h, 3, f);
+        CHECK (f.padC[56] == laneColour (0) && f.padB[56] == bFull && f.padC[59] == cWhite && f.padC[57] == cOff, "apc : LED pas actif / tête de lecture / vide");
+        CHECK (f.oled0 == "TYPHON TY-12" && f.btn[nScene0] == bFull + 1, "apc : écran et scène PISTES allumée");
+        // roll 1/16 à 120 BPM transport arrêté : 8 coups par seconde
+        uint8_t sc[3] = { 0x90, (uint8_t) (nScene0 + 6), 127 }; sf.handle (sc, 3, pat, h);
+        Surface::Hit hits[64]; int nh = 0;
+        for (int b = 0; b < 100; ++b) nh += sf.renderRoll (false, 0.0, 2.0 / 48000.0, 480, hits, 64);
+        CHECK (nh == 8, "apc : roll 1/16 = 8 coups en 1 s (%d)", nh);
+        release (nScene0 + 6); CHECK (sf.renderRoll (false, 0.0, 2.0 / 48000.0, 480, hits, 64) == 0, "apc : roll relâché");
+        CHECK (dawMode (true) == std::vector<uint8_t> ({ 0xF0, 0x47, 0x00, 0x53, 0x1C, 0x00, 0x01, 0x01, 0xF7 }), "apc : message mode DAW");
+    }
 
-        struct P : PatternAccess { Pattern p; bool stepOn (int l, int s) const override { return p.get (l, s).on(); }
-            void setStep (int l, int s, int v) override { Step st; st.vel = v; p.set (l, s, st); }
-            void clearLane (int l) override { for (int s = 0; s < numSteps; ++s) p.set (l, s, Step()); } } pat;
-        Control ctl; Out out;
-        ctl.noteOn (noteAt (1, 0), 77, 10, pat, 16, out);           // jouer la snare = la sélectionner
-        CHECK (out.numHits == 1 && out.hits[0].lane == 1 && out.hits[0].vel == 77 && ctl.selectedLane.load() == 1, "apc : pad de piste joue et sélectionne");
-        ctl.noteOff (noteAt (1, 0));
-        ctl.noteOn (noteAt (2, 3), 50, 0, pat, 16, out);            // vélocité ACCENT
-        ctl.noteOn (noteAt (4, 7), 10, 0, pat, 16, out);            // pas 5
-        CHECK (pat.p.get (1, 4).vel == 120, "apc : écriture d'un pas à la vélocité choisie (%d)", pat.p.get (1, 4).vel);
-        ctl.noteOn (noteAt (4, 7), 10, 0, pat, 16, out);
-        CHECK (! pat.p.get (1, 4).on(), "apc : second appui = efface le pas");
-        ctl.noteOn (noteAt (0, 4), 10, 0, pat, 16, out);            // pas 25 en 16 pas : ignoré
-        CHECK (! pat.p.get (1, 24).on(), "apc : pas au-delà de la longueur ignorés");
-
-        // roll 1/16 à 120 BPM, transport à l'arrêt : 8 coups par seconde
-        Control rc; Out o2; P p2;
-        rc.noteOn (noteAt (1, 2), 127, 0, p2, 16, o2);              // ROLL 1/16 maintenu
-        o2.numHits = 0; rc.noteOn (noteAt (0, 0), 90, 0, p2, 16, o2);
-        CHECK (o2.numHits == 0, "apc : avec ROLL maintenu, le pad ne joue pas en double");
-        int hits = 0; const int bs = 480;
-        for (int b = 0; b < 100; ++b) { o2.numHits = 0; rc.renderRoll (false, 0.0, 2.0 / 48000.0, bs, o2); hits += o2.numHits; }
-        CHECK (hits == 8, "apc : roll 1/16 libre à 120 BPM = 8 coups en 1 s (%d)", hits);
-        rc.aftertouch (noteAt (0, 0), 30); o2.numHits = 0;
-        for (int b = 0; b < 13; ++b) rc.renderRoll (false, 0.0, 2.0 / 48000.0, bs, o2);
-        CHECK (o2.numHits >= 1 && o2.hits[0].vel == 30, "apc : l'aftertouch règle la vélocité du roll");
-        // calé sur la grille de l'hôte : 1/8 sur une noire = 2 coups, aux positions exactes
-        rc.noteOff (noteAt (1, 2)); rc.noteOn (noteAt (0, 2), 127, 0, p2, 16, o2); o2.numHits = 0;
-        rc.renderRoll (true, 3.9, 1.0 / 48000.0, 48000, o2);          // 3.9 → 4.9 noires
-        CHECK (o2.numHits == 2 && std::abs (o2.hits[0].offset - 4800) <= 1 && std::abs (o2.hits[1].offset - 28800) <= 1, "apc : roll 1/8 calé sur la grille (%d coups)", o2.numHits);
-        rc.noteOff (noteAt (0, 0)); o2.numHits = 0; rc.renderRoll (true, 5.0, 1.0 / 48000.0, 48000, o2);
-        CHECK (o2.numHits == 0, "apc : roll s'arrête au relâchement du pad");
-
-        Control fc; Action a; fc.controller (21, 127);
-        CHECK (fc.queue.pop (a) && a.act == Act::setParam && a.target == tSpBits && a.value == 1.0f, "apc : fader 2 = Bits du grain SP");
-        fc.noteOn (noteAt (4, 2), 100, 0, p2, 16, o2); CHECK (fc.fillHeld.load(), "apc : FILL maintenu"); fc.noteOff (noteAt (4, 2)); CHECK (! fc.fillHeld.load(), "apc : FILL relâché");
+    // STRETCH : longueur, niveau, hauteur gardée (simple), pas de NaN (Paul)
+    {
+        Sample tone; tone.rate = 48000.0;
+        for (int i = 0; i < 24000; ++i) tone.l.push_back (0.5f * (float) std::sin (2.0 * 3.14159265 * 440.0 * i / 48000.0) * (i < 22000 ? 1.0f : (24000 - i) / 2000.0f));
+        tone.r = tone.l;
+        auto zc = [] (const std::vector<float>& v, size_t a, size_t b) { int n = 0; for (size_t i = a + 1; i < b; ++i) n += (v[i - 1] < 0) != (v[i] < 0); return n; };
+        auto ws = stretchSample (tone, 1, 4.0, 0.5f);
+        CHECK (std::abs ((int) ws.l.size() - 96000) < 20 && finiteAll (ws.l), "stretch simple x4 : 0,5 s -> %.2f s", ws.l.size() / 48000.0);
+        const int z0 = zc (tone.l, 4800, 9600), z1 = zc (ws.l, 24000, 28800);
+        CHECK (std::abs (z0 - z1) <= 3, "stretch simple : même hauteur (passages à zéro %d / %d)", z0, z1);
+        CHECK (peakOf (ws.l) > 0.45f && peakOf (ws.l) <= 0.51f, "stretch simple : niveau gardé (%.2f)", peakOf (ws.l));
+        auto ps = stretchSample (tone, 2, 16.0, 0.5f);
+        CHECK (std::abs ((int) ps.l.size() - 384000) < 20 && finiteAll (ps.l) && finiteAll (ps.r), "paulstretch x16 : 8 s, sans NaN");
+        double e = 0; for (size_t i = 96000; i < 288000; ++i) e += ps.l[i] * ps.l[i];
+        CHECK (e > 100.0, "paulstretch : nappe continue au milieu (énergie %.0f)", e);
+        bool stop = true; auto cs = stretchSample (tone, 2, 16.0, 0.5f, [&] { return stop; });
+        CHECK (cs.l.size() == tone.l.size(), "stretch : annulable");
+        SampleSet set; set.variants.push_back ({ std::make_shared<Sample> (tone), std::make_shared<Sample> (tone) });
+        auto st = stretchSet (set, 1, 2.0, 0.3f);
+        CHECK (st->numVariants() == 1 && st->variants[0].size() == 2 && st->variants[0][1]->l.size() > 47000, "stretch : toutes les variantes et round robin");
     }
 
     std::printf ("\n%s (%d échec%s)\n", fails == 0 ? "TOUT EST BON" : "PROBLÈMES", fails, fails > 1 ? "s" : "");

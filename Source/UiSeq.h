@@ -171,6 +171,8 @@ namespace tui
                     auto r = stepRect (lane, j);
                     const Step s = pat.get (lane, j);
                     const int head = s.on() ? -1 : pat.headOf (lane, j);
+                    if (head >= off) continue;   // dessiné avec son pas de tête (pas fusionnés = un seul grand pas)
+                    if (s.on() && s.len > 1) r = r.getUnion (stepRect (lane, std::min (j + s.len - 1, off + 15)));
                     if (head >= 0)
                     {
                         // continuation d'une liaison : barre qui rejoint le pas de tête
@@ -200,7 +202,7 @@ namespace tui
                         else
                         {
                             g.fillRoundedRectangle (r, 5.0f);
-                            if (s.len > 1) g.fillRect (r.withTrimmedLeft (r.getWidth() - 6.0f));
+                            if (s.len > 1 && j + s.len - 1 > off + 15) g.fillRect (r.withTrimmedLeft (r.getWidth() - 6.0f));   // continue sur la page suivante
                             if (s.ratchet > 1)
                             {
                                 g.setColour (t.bg.withAlpha (0.85f));
