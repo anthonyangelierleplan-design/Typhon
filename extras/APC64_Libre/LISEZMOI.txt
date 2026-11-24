@@ -1,26 +1,23 @@
-APC64 Libre — touch strips assignables dans Ableton (comme le mode User de l'APC40)
-=============================================================================
+APC64 Libre — mode USER pour les touch strips (comme l'APC40)
+============================================================
 
 Installation (Windows, Ableton Live 12)
 1. Ferme Ableton.
-2. Copie le dossier « APC64_Libre » dans :
-   Documents\Ableton\User Library\Remote Scripts\
-   (crée le dossier « Remote Scripts » s'il n'existe pas)
-3. Ouvre Ableton > Préférences > Link, Tempo & MIDI :
-   - Surface de contrôle : choisis « APC64_Libre » à la place de « APC64 »,
-     entrée et sortie = APC64.
-   - Dans la liste des ports, sur l'entrée APC64 : active « Télécommande » (Remote).
-     Sur la sortie APC64 : active aussi « Télécommande » (pour que la LED suive la valeur).
+2. Remplace le dossier dans  Documents\Ableton\User Library\Remote Scripts\APC64_Libre\
+3. Rouvre Ableton. Surface de contrôle : « APC64_Libre », entrée et sortie = APC64.
+
+Si tu avais fait des assignations avec Ctrl+M sur les strips : supprime-les
+(Ctrl+M, sélectionne-les dans la liste à gauche, touche Suppr). Sinon elles restent actives
+dans tous les modes. Tu peux aussi désactiver « Télécommande » sur les ports APC64.
 
 Utilisation
-- Tout fonctionne comme avant (Session, Note, Device, Volume, Pan, Sends...).
-- Appuie sur le bouton OFF des touch strips : les 8 strips sont libres.
-- Ctrl+M dans Ableton, clique un réglage, touche un strip : c'est assigné.
-  Ctrl+M à nouveau pour sortir. Les assignations sont gardées avec le projet.
-- Repasse en Device / Volume / Pan... : les strips reprennent leur rôle normal.
-  Rappuie sur OFF : tes assignations reviennent.
+- Bouton OFF des touch strips = mode USER.
+- Assigner : clique un réglage dans Ableton (il s'encadre), maintiens SHIFT et touche un strip.
+- Libérer un strip : maintiens CLEAR et touche le strip.
+- En Device / Volume / Pan / Sends / Channel, les strips font leur travail normal ;
+  rappuie sur OFF et tes assignations reviennent.
+- Les assignations sont enregistrées avec le projet Live (pistes, retours, master,
+  appareils, racks, volume / pan / envois).
 
-Revenir en arrière : remets « APC64 » comme surface de contrôle (ou supprime le dossier).
-
-Avec Typhon : si Typhon pilote l'APC64 (Paramètres > Akai APC64 > On), la surface de
-contrôle doit être sur « Aucun ». APC64 Libre, c'est pour le reste du temps.
+Revenir en arrière : remets « APC64 » comme surface de contrôle.
+Avec Typhon aux commandes de l'APC64 : surface de contrôle sur « Aucun ».
