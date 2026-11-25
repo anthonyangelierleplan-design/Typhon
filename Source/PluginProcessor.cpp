@@ -1,3 +1,4 @@
+#include <numeric>
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 #include "Capture.h"
@@ -161,6 +162,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout TyphonProcessor::createLayou
         grp->addChild (std::make_unique<AudioParameterInt> (ParameterID { pid (i, "var"), 1 }, n + "Variante", 1, 16, 1));
         grp->addChild (std::make_unique<AudioParameterBool> (ParameterID { pid (i, "steplen"), 1 }, n + juce::String::fromUTF8 ("Dur\xc3\xa9" "e limit\xc3\xa9" "e au pas"), false));
         grp->addChild (std::make_unique<AudioParameterInt> (ParameterID { pid (i, "len"), 1 }, n + "Longueur de piste", 0, 32, 0));
+        grp->addChild (std::make_unique<AudioParameterChoice> (ParameterID { pid (i, "spd"), 1 }, n + "Vitesse de piste",
+                       StringArray { "x2 (1/32)", "x1,5 (1/16 triolet)", "x1 (1/16)", "x3/4 (1/8 triolet)", "x1/2 (1/8)", "x1/4 (1/4)" }, 2));
         grp->addChild (std::make_unique<AudioParameterChoice> (ParameterID { pid (i, "strmode"), 1 }, n + "Stretch mode", StringArray { "Off", "Simple", "Paulstretch" }, 0));
         grp->addChild (f (pid (i, "stramt"), n + "Stretch facteur", 0.5f, 32.0f, 1.0f, 4.0f));
         grp->addChild (f (pid (i, "strwin"), n + juce::String::fromUTF8 ("Stretch fen\xc3\xaatre"), 0.0f, 1.0f, 0.5f));
@@ -244,7 +247,7 @@ TyphonProcessor::TyphonProcessor()
     auto G = [&] (const char* id) { return apvts.getRawParameterValue (id); };
     pSeqLen = G ("seq_len"); pFillLen = G ("fill_len"); pFillGrid = G ("fill_grid"); pFillOthers = G ("fill_others"); pFillCrash = G ("fill_crash");
     for (int i = 0; i < numLanes; ++i) pFillLane[i] = apvts.getRawParameterValue ("fill_l" + juce::String (i));
-    for (int i = 0; i < numLanes; ++i) laneLenP[i] = apvts.getRawParameterValue (pid (i, "len"));
+    for (int i = 0; i < numLanes; ++i) { laneLenP[i] = apvts.getRawParameterValue (pid (i, "len")); laneSpdP[i] = apvts.getRawParameterValue (pid (i, "spd")); laneCur[i].store (-1); }
     for (int i = 0; i < numLanes; ++i) soloP[i] = apvts.getRawParameterValue (pid (i, "solo"));
     pFillSrc = G ("fill_src");
     pFxaSize = G ("fxa_size"); pFxaDamp = G ("fxa_damp"); pFxaWidth = G ("fxa_width"); pFxaRet = G ("fxa_ret");
@@ -823,56 +826,92 @@ void TyphonProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         int laneLen[numLanes];
         for (int l = 0; l < numLanes; ++l) { const int ll = (int) laneLenP[l]->load(); laneLen[l] = ll > 0 ? std::min (ll, numSteps) : len; }
 
+        // chaque piste avance à sa vitesse (x2, triolets, x1/2...) : ses pas durent d noires
+        for (int lane = 0; lane < numLanes; ++lane)
+        {
+            const double d = 0.25 / laneSpeed (lane);
+            const bool normal = std::abs (d - 0.25) < 1.0e-9;
+            const int ll = laneLen[lane];
+            // step loop (compté en double-croches) ramené en pas de cette piste
+            const int64_t loopS0 = stepLoopSize > 0 ? (int64_t) std::ceil (stepLoopStart * 0.25 / d - 1.0e-9) : 0;
+            const int64_t loopN = stepLoopSize > 0 ? std::max<int64_t> (1, (int64_t) std::llround (stepLoopSize * 0.25 / d)) : 0;
+            auto virt = [&] (int64_t li) { return (loopN > 0 && li >= loopS0) ? loopS0 + ((li - loopS0) % loopN) : li; };
+            const int64_t liNow = (int64_t) std::floor (p0 / d);
+            { const int64_t v = virt (liNow); laneCur[lane].store ((int) (((v % ll) + ll) % ll)); }
+            for (int64_t li = liNow - 2; li * d < p1 + 0.25; ++li)
+            {
+                const int64_t vg = virt (li);
+                const double stepPpq = li * d;
+                const int64_t bar = (int64_t) std::floor (stepPpq / 4.0 + 1.0e-9);
+                const int posInBar = (int) (((li % 16) + 16) % 16);
+                const bool fill = barIsFill (bar);
+                const double sw = normal ? swingOffset ((int) (((li % 2) + 2) % 2), swing) : 0.0;
+                const int st = (int) (((vg % ll) + ll) % ll);
+                const int64_t loopIdx = vg >= 0 ? vg / ll : -((-vg + ll - 1) / ll);   // tour de la piste (conditions A:B)
+                auto play = [&] (const Step& s, const HitList& h, bool fromFill, bool fromWritten)
+                {
+                    // probabilité : tirage propre à chaque passage du pas
+                    if (! fromFill && s.prob < 100)
+                    {
+                        uint64_t x = (uint64_t) li * 8 + (uint64_t) lane + 0x9E3779B97F4A7C15ull;   // splitmix64
+                        x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ull; x = (x ^ (x >> 27)) * 0x94D049BB133111EBull; x ^= x >> 31;
+                        if ((int) (x % 100) >= s.prob) return;
+                    }
+                    // pas fusionnés = un seul grand pas : ratchet et division se répartissent sur toute sa longueur
+                    const double span = fromFill ? 1.0 : (double) std::max (1, s.len);
+                    const double nudge = fromFill ? 0.0 : s.nudge / 100.0;
+                    for (int k = 0; k < h.count; ++k)
+                    {
+                        const double at = h.at[k] < 0.0f ? h.at[k] : h.at[k] * span;   // le flam n'est pas étiré
+                        const double t = stepPpq + (sw + at + nudge) * d;
+                        if (t < p0 || t >= p1) continue;
+                        int64_t gate = -1;
+                        const bool limit = fromFill ? lp[lane].steplen->load() > 0.5f
+                                                    : (s.dur == 1 || (s.dur == 0 && lp[lane].steplen->load() > 0.5f));
+                        if (h.at[k] < 0.0f) gate = (int64_t) (-h.at[k] * d / ppqPerSample);       // flam : jusqu'au coup principal
+                        else if (! fromFill && s.len > 1)
+                        {
+                            const double next = k + 1 < h.count ? h.at[k + 1] : 1.0;
+                            gate = (int64_t) ((next - h.at[k]) * span * d / ppqPerSample);
+                        }
+                        else if (limit)
+                        {
+                            const double next = k + 1 < h.count ? h.at[k + 1] : 1.0;
+                            const double dur = fromFill ? (fo.grid == 0 ? 2.0 : (fo.grid == 1 ? 1.0 : (fo.grid == 2 ? 0.5 : 2.0 / 3.0))) : (next - h.at[k]);
+                            gate = std::max<int64_t> (16, (int64_t) (dur * d / ppqPerSample));
+                        }
+                        addEv ((int) ((t - p0) / ppqPerSample), lane, h.vel[k], fromFill ? 0 : s.choke, gate,
+                               (fromFill || fromWritten) ? -1 : st, fromFill ? 0 : s.pitch, ! fromFill && s.rev);
+                    }
+                };
+                HitList fh;
+                if (fill && writtenFill)
+                {
+                    const Step ws = bank[fillPatternIndex].get (lane, st);
+                    if (ws.on() && ws.condPasses (loopIdx, true)) play (ws, hitsOf (ws), false, true);
+                }
+                else if (fill && normal && fillHits (fo, lane, posInBar, fh)) play (Step(), fh, true, false);
+                else
+                {
+                    const Step ps = pattern.get (lane, st);
+                    if (ps.on() && ps.condPasses (loopIdx, fill)) play (ps, hitsOf (ps), false, false);
+                    continue;
+                }
+                // le fill a remplacé la piste : les pas réservés au fill (condition FILL) jouent quand même
+                {
+                    const Step ps = pattern.get (lane, st);
+                    if (ps.on() && ps.cond == 1) play (ps, hitsOf (ps), false, false);
+                }
+            }
+        }
+        // crash au retour sur le 1 après un fill
         for (int64_t gi = giNow - 2; gi * 0.25 < p1 + 0.25; ++gi)
         {
-            int64_t vg = gi;   // position « virtuelle » (step loop)
+            int64_t vg = gi;
             if (stepLoopSize > 0 && gi >= stepLoopStart) vg = stepLoopStart + ((gi - stepLoopStart) % stepLoopSize);
             const double stepPpq = gi * 0.25;
             const int64_t bar = (int64_t) std::floor ((double) gi / 16.0);
             const int posInBar = (int) (((gi % 16) + 16) % 16);
-            const bool fill = barIsFill (bar);
-            for (int lane = 0; lane < numLanes; ++lane)
-            {
-                const int st = (int) (((vg % laneLen[lane]) + laneLen[lane]) % laneLen[lane]);
-                HitList h; Step s; bool fromFill = false, fromWritten = false;
-                if (fill && writtenFill) { s = bank[fillPatternIndex].get (lane, st); fromWritten = true; if (! s.on()) continue; h = hitsOf (s); }
-                else if (fill && fillHits (fo, lane, posInBar, h)) fromFill = true;
-                else { s = pattern.get (lane, st); if (! s.on()) continue; h = hitsOf (s); }
-                // probabilité : tirage propre à chaque passage du pas
-                if (! fromFill && s.prob < 100)
-                {
-                    uint64_t x = (uint64_t) gi * 8 + (uint64_t) lane + 0x9E3779B97F4A7C15ull;   // splitmix64
-                    x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ull; x = (x ^ (x >> 27)) * 0x94D049BB133111EBull; x ^= x >> 31;
-                    if ((int) (x % 100) >= s.prob) continue;
-                }
-                // pas fusionnés = un seul grand pas : ratchet et division se répartissent sur toute sa longueur
-                const double span = fromFill ? 1.0 : (double) std::max (1, s.len);
-                const double nudge = fromFill ? 0.0 : s.nudge / 100.0;
-                for (int k = 0; k < h.count; ++k)
-                {
-                    const double at = h.at[k] < 0.0f ? h.at[k] : h.at[k] * span;   // le flam n'est pas étiré
-                    const double t = stepPpq + (swingOffset ((int) (((gi % 2) + 2) % 2), swing) + at + nudge) * 0.25;
-                    if (t < p0 || t >= p1) continue;
-                    int64_t gate = -1;
-                    const bool limit = fromFill ? lp[lane].steplen->load() > 0.5f
-                                                : (s.dur == 1 || (s.dur == 0 && lp[lane].steplen->load() > 0.5f));
-                    if (h.at[k] < 0.0f) gate = (int64_t) (-h.at[k] * 0.25 / ppqPerSample);       // flam : jusqu'au coup principal
-                    else if (! fromFill && s.len > 1)
-                    {
-                        const double next = k + 1 < h.count ? h.at[k + 1] : 1.0;
-                        gate = (int64_t) ((next - h.at[k]) * span * 0.25 / ppqPerSample);
-                    }
-                    else if (limit)
-                    {
-                        const double next = k + 1 < h.count ? h.at[k + 1] : 1.0;
-                        const double dur = fromFill ? (fo.grid == 0 ? 2.0 : (fo.grid == 1 ? 1.0 : (fo.grid == 2 ? 0.5 : 2.0 / 3.0))) : (next - h.at[k]);
-                        gate = std::max<int64_t> (16, (int64_t) (dur * 0.25 / ppqPerSample));
-                    }
-                    addEv ((int) ((t - p0) / ppqPerSample), lane, h.vel[k], fromFill ? 0 : s.choke, gate,
-                           (fromFill || fromWritten) ? -1 : st, fromFill ? 0 : s.pitch, ! fromFill && s.rev);
-                }
-            }
-            // crash au retour sur le 1 après un fill
             if (posInBar == 0 && pFillCrash->load() > 0.5f && barIsFill (bar - 1) && ! barIsFill (bar) && bar >= 1
                 && ! pattern.get (6, (int) (((vg % laneLen[6]) + laneLen[6]) % laneLen[6])).on())
                 if (stepPpq >= p0 && stepPpq < p1) addEv ((int) ((stepPpq - p0) / ppqPerSample), 6, 110, 0, -1);
@@ -885,6 +924,7 @@ void TyphonProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     else
     {
         curStep.store (-1);
+        for (auto& c : laneCur) c.store (-1);
         wasPlayingSeq = false;
         stepLoopSize = 0;
         const int pend = pendingPattern.load();
@@ -1177,24 +1217,39 @@ juce::File TyphonProcessor::writePatternMidi() const
     const int tpq = 960;
     const double swing = pSwing->load();
     const int len = seqLength();
+    // conditions A:B : on exporte assez de tours pour que chaque pas tombe à sa place (ppcm des B utilisés)
+    int cycles = 1;
     for (int lane = 0; lane < numLanes; ++lane)
-        for (int gi = 0; gi < len; ++gi)
+        for (int st = 0; st < laneLength (lane); ++st)
         {
-            const int st = gi % laneLength (lane);   // longueur propre à la piste : elle tourne dans la mesure
             const Step s = pattern.get (lane, st);
-            if (! s.on()) continue;
+            int a, b; Step::condRatio (s.cond, a, b);
+            if (s.on() && b > 1) cycles = std::lcm (cycles, b);
+        }
+    for (int lane = 0; lane < numLanes; ++lane)
+    {
+        const double d = 0.25 / laneSpeed (lane);   // durée d'un pas de cette piste (noires)
+        const bool normal = std::abs (d - 0.25) < 1.0e-9;
+        const int total = (int) std::floor (len * 0.25 * cycles / d + 1.0e-9);
+        for (int gi = 0; gi < total; ++gi)
+        {
+            const int ll = laneLength (lane);
+            const int st = gi % ll;   // longueur propre à la piste : elle tourne dans la mesure
+            const Step s = pattern.get (lane, st);
+            if (! s.on() || ! s.condPasses (gi / ll, false)) continue;
             const HitList h = hitsOf (s);
             const double span = std::max (1, s.len);
             for (int k = 0; k < h.count; ++k)
             {
                 const double at = h.at[k] < 0.0f ? h.at[k] : h.at[k] * span;
-                const double beat = std::max (0.0, (gi + swingOffset (gi, swing) + at + s.nudge / 100.0) * 0.25);
-                const double lenBeats = h.at[k] < 0.0f ? -h.at[k] * 0.25 * 0.9 : (s.len > 1 ? (((k + 1 < h.count) ? h.at[k + 1] : 1.0) - h.at[k]) * span * 0.25 : 0.25 / h.count * 0.9);
+                const double beat = std::max (0.0, (gi + (normal ? swingOffset (gi, swing) : 0.0) + at + s.nudge / 100.0) * d);
+                const double lenBeats = h.at[k] < 0.0f ? -h.at[k] * d * 0.9 : (s.len > 1 ? (((k + 1 < h.count) ? h.at[k + 1] : 1.0) - h.at[k]) * span * d : d / h.count * 0.9);
                 const int vel = h.vel[k];
                 seq.addEvent (juce::MidiMessage::noteOn (10, noteForLane (lane), (juce::uint8) vel), beat * tpq);
                 seq.addEvent (juce::MidiMessage::noteOff (10, noteForLane (lane)), (beat + lenBeats) * tpq);
             }
         }
+    }
     seq.updateMatchedPairs();
     juce::MidiFile mf;
     mf.setTicksPerQuarterNote (tpq);

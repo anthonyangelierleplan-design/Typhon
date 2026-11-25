@@ -19,6 +19,7 @@
 //  Clear maintenu + pad ou bouton de piste = effacer la piste · Duplicate = recopier la page / la 1re moitié
 //  Undo = annuler (Shift : rétablir) · Stop = couper tous les sons
 //  Touch strips : Grain SP · Bits · Fréquence · Filtre SP | Filtre · Decay · Pitch de la piste | Swing
+//  Pas maintenu + strip Filtre / Decay / Pitch : verrou sur ce pas (pitch = pitch du pas)
 // ============================================================================
 #include "Dsp.h"
 #include <atomic>
@@ -84,6 +85,9 @@ namespace typhon
             virtual void commit() = 0;
             virtual std::string laneLabel (int lane) const = 0;
             virtual void selectPattern (int) {}
+            // pas maintenu + strip : verrou du pas. Renvoie l'indice du verrou, -2 pour le pitch du pas, -1 si ce strip ne verrouille rien
+            virtual int stripLock (int) const { return -1; }
+            virtual float stripLockValue (int, int, float v01) const { return v01; }   // valeur réelle du réglage
         };
 
         // Image voulue de la surface (comparée à la précédente : seuls les changements partent)
@@ -105,6 +109,9 @@ namespace typhon
             std::atomic<bool> sessionView { true };   // la grille appartient à Typhon (vue Session de l'APC64)
             std::atomic<int> touchedStrips { 0 };       // un strip ne règle rien tant qu'on ne le touche pas (évite les échos)
             std::atomic<uint64_t> dirtyPads { 0 };      // pads à redessiner tout de suite (l'APC64 change la LED d'un pad appuyé)
+            // pas maintenu (piste * 64 + pas) : un strip bougé pendant ce temps pose un verrou sur ce pas
+            std::atomic<int> held { -1 };
+            std::atomic<bool> heldWasOn { false }, heldUsed { false };
 
             int pages (int seqLen) const { return std::max (1, seqLen / 8); }
 
@@ -120,13 +127,27 @@ namespace typhon
                 const int type = d[0] & 0xF0, ch = d[0] & 0x0F;
                 if (type == 0xE0 && ch < 8)
                 {
-                    if (touchedStrips.load() & (1 << ch)) h.setStrip (ch, selLane.load(), (float) ((d[2] << 7) | d[1]) / 16383.0f);
+                    if (! (touchedStrips.load() & (1 << ch))) return;
+                    const float v01 = (float) ((d[2] << 7) | d[1]) / 16383.0f;
+                    const int hd = held.load(), lk = h.stripLock (ch);
+                    if (hd >= 0 && lk != -1)
+                    {
+                        // pas maintenu + strip = verrou (comme sur une boîte à rythmes : maintenir le pas, tourner le potard)
+                        const int lane = hd / 64, st = hd % 64;
+                        auto s = pat.get (lane, st);
+                        if (! s.on()) return;
+                        if (lk == -2) { s.pitch = std::max (-12, std::min (12, (int) std::lround (v01 * 24.0f - 12.0f))); pat.set (lane, st, s); }
+                        else pat.setLock (lane, st, lk, h.stripLockValue (ch, lane, v01));
+                        heldUsed.store (true);
+                        return;
+                    }
+                    h.setStrip (ch, selLane.load(), v01);
                     return;
                 }
                 const bool on = type == 0x90 && d[2] > 0, off = type == 0x80 || (type == 0x90 && d[2] == 0);
                 if (! on && ! off) return;
                 const int note = d[1];
-                if (note < 64) { if (on) pad (note % 8, note / 8, pat, h); dirtyPads.fetch_or (1ull << note); return; }
+                if (note < 64) { if (on) pad (note % 8, note / 8, pat, h); else padReleased (note % 8, note / 8, pat, h); dirtyPads.fetch_or (1ull << note); return; }
                 if (note >= nStripTouch0 && note < nStripTouch0 + 8)
                 {
                     const int bit = 1 << (note - nStripTouch0);
@@ -213,8 +234,30 @@ namespace typhon
                 h.commit();
             }
 
+            // pas sous un pad (ou -1)
+            bool stepAt (int col, int row, Host& h, int& lane, int& st) const
+            {
+                const int len = h.seqLen();
+                if (view.load() == 0) { lane = 7 - row; st = page.load() * 8 + col; return st < len; }
+                if (row < 4) return false;
+                lane = selLane.load(); st = (7 - row) * 8 + col;
+                return st < len;
+            }
+
+            // relâchement d'un pad : un pas allumé qu'on a juste tapé (sans bouger de strip) s'éteint
+            void padReleased (int col, int row, Pattern& pat, Host& h)
+            {
+                int lane, st;
+                if (! stepAt (col, row, h, lane, st) || held.load() != lane * 64 + st) return;
+                held.store (-1);
+                if (heldUsed.load()) { h.commit(); return; }
+                if (heldWasOn.load()) { pat.set (lane, st, Step()); pat.clearLocks (lane, st); lastStep.store (-1); h.commit(); }
+            }
+
             void editStep (Pattern& pat, int lane, int st, Host& h)
             {
+                heldUsed.store (false); heldWasOn.store (false);
+                held.store (lane * 64 + st);
                 auto s = pat.get (lane, st);
                 const int head = s.on() ? st : pat.headOf (lane, st);
                 if (shift.load())
@@ -226,7 +269,7 @@ namespace typhon
                     pat.set (lane, st, s);
                     lastStep.store (st);
                 }
-                else if (head == st) { pat.set (lane, st, Step()); pat.clearLocks (lane, st); lastStep.store (-1); }
+                else if (head == st) { heldWasOn.store (true); lastStep.store (st); }   // s'éteint au relâchement, sauf si un strip a posé un verrou
                 else
                 {
                     if (head >= 0) { auto hs = pat.get (lane, head); hs.len = st - head; pat.set (lane, head, hs); }   // coupe la liaison

@@ -32,6 +32,8 @@ namespace tui
             // envois et ducking par piste
             for (int l = 0; l < typhon::numLanes; ++l)
             {
+                vol[l] = K ("", typhon::pid (l, "vol"), fmtDb);
+                pan[l] = K ("", typhon::pid (l, "pan"), [] (float v) { return std::fabs (v) < 0.01f ? juce::String ("C") : (v < 0 ? "G " : "D ") + juce::String (juce::roundToInt (std::fabs (v) * 100)); });
                 sendA[l] = K ("", typhon::pid (l, "sendA"), fmtPct);
                 sendB[l] = K ("", typhon::pid (l, "sendB"), fmtPct);
                 auto* d = duckBtns.add (new Pill (c, "DUCK", true));
@@ -59,10 +61,12 @@ namespace tui
             g.setColour (t.sub); g.setFont (font (12.0f, true));
             g.drawText (juce::String::fromUTF8 ("BUS A \xc2\xb7 R\xc3\x89VERBE"), lblA, juce::Justification::centredLeft);
             g.drawText (juce::String::fromUTF8 ("BUS B \xc2\xb7 DELAY (CAL\xc3\x89 SUR LE TEMPO)"), lblB, juce::Justification::centredLeft);
-            g.drawText ("ENVOIS ET DUCKING PAR PISTE", lblSends, juce::Justification::centredLeft);
+            g.drawText ("TABLE DE MIXAGE", lblSends, juce::Justification::centredLeft);
             g.drawText ("DUCKING (POMPE)", lblDuck, juce::Justification::centredLeft);
             g.drawText ("MASTER (SORTIE PRINCIPALE)", lblMaster, juce::Justification::centredLeft);
             g.setFont (font (11.0f, true));
+            g.drawText ("VOLUME", colV, juce::Justification::centred);
+            g.drawText ("PAN", colP, juce::Justification::centred);
             g.drawText ("ENVOI A", colA, juce::Justification::centred);
             g.drawText ("ENVOI B", colB, juce::Justification::centred);
             g.drawText ("DUCK", colD, juce::Justification::centred);
@@ -84,8 +88,8 @@ namespace tui
         void resized() override
         {
             auto r = getLocalBounds().reduced (24, 20);
-            left = r.removeFromLeft (330); r.removeFromLeft (20);
-            right = r.removeFromRight (420); r.removeFromRight (20);
+            left = r.removeFromLeft (300); r.removeFromLeft (16);
+            right = r.removeFromRight (370); r.removeFromRight (16);
             mid = r;
 
             auto L = left.reduced (16);
@@ -106,17 +110,19 @@ namespace tui
             auto M = mid.reduced (16);
             lblSends = M.removeFromTop (18); M.removeFromTop (4);
             auto head = M.removeFromTop (18);
-            head.removeFromLeft (110);
-            const int cw = (head.getWidth()) / 3;
-            colA = head.removeFromLeft (cw); colB = head.removeFromLeft (cw); colD = head;
+            head.removeFromLeft (96);
+            const int cw = (head.getWidth()) / 5;
+            colV = head.removeFromLeft (cw); colP = head.removeFromLeft (cw); colA = head.removeFromLeft (cw); colB = head.removeFromLeft (cw); colD = head;
             const int rowH = std::min (70, M.getHeight() / typhon::numLanes);
             for (int l = 0; l < typhon::numLanes; ++l)
             {
                 auto row = M.removeFromTop (rowH);
-                laneLbl[l] = row.removeFromLeft (110);
+                laneLbl[l] = row.removeFromLeft (96);
+                vol[l]->setBounds (row.removeFromLeft (cw).withSizeKeepingCentre (64, rowH - 4));
+                pan[l]->setBounds (row.removeFromLeft (cw).withSizeKeepingCentre (64, rowH - 4));
                 sendA[l]->setBounds (row.removeFromLeft (cw).withSizeKeepingCentre (64, rowH - 4));
                 sendB[l]->setBounds (row.removeFromLeft (cw).withSizeKeepingCentre (64, rowH - 4));
-                duckBtns[l]->setBounds (row.withSizeKeepingCentre (70, 26));
+                duckBtns[l]->setBounds (row.withSizeKeepingCentre (std::min (70, row.getWidth() - 4), 26));
             }
 
             auto R = right.reduced (16);
@@ -133,14 +139,14 @@ namespace tui
         Ctx& ctx;
         juce::OwnedArray<Knob> knobs;
         Knob* kA[4] {}; Knob* kB[3] {}; Knob* kD[2] {}; Knob* kMaster = nullptr;
-        Knob* sendA[typhon::numLanes] {}; Knob* sendB[typhon::numLanes] {};
+        Knob* sendA[typhon::numLanes] {}; Knob* sendB[typhon::numLanes] {}; Knob* vol[typhon::numLanes] {}; Knob* pan[typhon::numLanes] {};
         juce::OwnedArray<Pill> duckBtns;
         Pill pingPong, duckFx;
         juce::ComboBox timeBox, srcBox;
         DynBlock master;
         juce::OwnedArray<juce::AudioProcessorValueTreeState::ButtonAttachment> btnAtts;
         juce::OwnedArray<juce::AudioProcessorValueTreeState::ComboBoxAttachment> boxAtts;
-        juce::Rectangle<int> left, mid, right, lblA, lblB, lblSends, lblDuck, lblMaster, colA, colB, colD, duckHelp, timeLbl, srcLbl, meterArea;
+        juce::Rectangle<int> left, mid, right, lblA, lblB, lblSends, lblDuck, lblMaster, colV, colP, colA, colB, colD, duckHelp, timeLbl, srcLbl, meterArea;
         juce::Rectangle<int> laneLbl[typhon::numLanes];
     };
 

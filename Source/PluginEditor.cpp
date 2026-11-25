@@ -151,7 +151,7 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
 {
     Ui (TyphonProcessor& p)
         : ctx { p }, look (ctx), grid (ctx), lane (ctx), capture (ctx), settingsPage (ctx), mixPage (ctx), libPage (ctx), editor (ctx),
-          tabSeq (ctx, juce::String::fromUTF8 ("S\xc3\x89QUENCE")), tabCap (ctx, "CAPTURE"), tabMix (ctx, "MIX"), tabLib (ctx, "SONS"), fillSet (ctx, juce::String::fromUTF8 ("R\xc3\x89GLAGES FILL")),
+          tabSeq (ctx, juce::String::fromUTF8 ("S\xc3\x89QUENCE")), tabCap (ctx, "CAPTURE EZDRUMMER"), subLib (ctx, juce::String::fromUTF8 ("BIBLIOTH\xc3\x88QUE")), tabMix (ctx, "MIX"), tabLib (ctx, "SONS"), fillSet (ctx, juce::String::fromUTF8 ("R\xc3\x89GLAGES FILL")),
           chokeAllBtn (ctx, "CHOKE GLOBAL"), undoBtn (ctx, juce::String::fromUTF8 ("\xe2\x86\xb6")), redoBtn (ctx, juce::String::fromUTF8 ("\xe2\x86\xb7")), settingsBtn (ctx, juce::String::fromUTF8 ("\xe2\x9a\x99")),
           dragBtn (ctx), fillBtn (ctx), spAuth (ctx, "AUTHENTIQUE"), spClean (ctx, "PROPRE"), panelBtn (ctx, juce::String::fromUTF8 ("RANGER \xe2\x96\xb8")), panelTab (ctx), rollBtn (ctx, "ROLL"), loopBtn (ctx, "STEP LOOP")
     {
@@ -164,9 +164,14 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
         addChildComponent (libPage);
         libPage.onLaneLoaded = [this] (int l) { if (l >= 0) { grid.selected = l; lane.setLane (l); } else lane.setLane (lane.lane); grid.repaint(); };
         addChildComponent (editor);
-        for (auto* b : { &tabSeq, &tabCap, &tabMix, &tabLib, &settingsBtn, &chokeAllBtn }) { addAndMakeVisible (*b); b->textSize = 13.0f; }
-        tabLib.isOn = [this] { return page == 4; };
-        tabLib.onClick = [this] { setPage (4); };
+        for (auto* b : { &tabSeq, &tabMix, &tabLib, &settingsBtn }) { addAndMakeVisible (*b); b->textSize = 13.0f; }
+        // CAPTURE est une source de sons : elle vit dans SONS, à côté de la bibliothèque ; CHOKE GLOBAL vit dans MIX
+        for (auto* b : { &tabCap, &subLib, &chokeAllBtn }) { addChildComponent (*b); b->textSize = 11.5f; }
+        tabLib.isOn = [this] { return page == 4 || page == 1; };
+        tabLib.onClick = [this] { setPage (sonsPage); };
+        subLib.isOn = [this] { return page == 4; };
+        subLib.onClick = [this] { setPage (4); };
+        chokeAllBtn.setTooltip (juce::String::fromUTF8 ("Chaque coup coupe toutes les autres pistes (comme une seule voix)"));
         tabMix.isOn = [this] { return page == 3; };
         for (auto* b : { &undoBtn, &redoBtn }) { addAndMakeVisible (*b); b->textSize = 20.0f; }
         undoBtn.setTooltip ("Annuler (Ctrl+Z)"); redoBtn.setTooltip (juce::String::fromUTF8 ("R\xc3\xa9tablir (Ctrl+Y)"));
@@ -218,7 +223,7 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
             juce::Component::SafePointer<Ui> safe (this);
             m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&rollBtn), [safe] (int r) { if (safe != nullptr && r > 0) { safe->rollRate = r; safe->rollBtn.repaint(); } });
         };
-        rollBtn.setTooltip (juce::String::fromUTF8 ("Maintenir : roulement sur la piste choisie, calÃ© sur le tempo Â· clic droit : cadence"));
+        rollBtn.setTooltip (juce::String::fromUTF8 ("Maintenir : roulement sur la piste choisie, cal\xc3\xa9 sur le tempo \xc2\xb7 clic droit : cadence"));
         loopBtn.sub = [this] { return juce::String (loopSize) + " PAS"; };
         loopBtn.onHold = [this] (bool on) { ctx.proc.stepLoopLen.store (on ? loopSize : 0); };
         loopBtn.onMenu = [this]
@@ -228,7 +233,7 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
             juce::Component::SafePointer<Ui> safe (this);
             m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&loopBtn), [safe] (int r) { if (safe != nullptr && r > 0) { safe->loopSize = r; safe->loopBtn.repaint(); } });
         };
-        loopBtn.setTooltip (juce::String::fromUTF8 ("Maintenir pendant la lecture : rejoue en boucle les pas en cours Â· clic droit : longueur"));
+        loopBtn.setTooltip (juce::String::fromUTF8 ("Maintenir pendant la lecture : rejoue en boucle les pas en cours \xc2\xb7 clic droit : longueur"));
         panelTab.onClick = [this] { setPanelOpen (true); };
         dragBtn.setTooltip (juce::String::fromUTF8 ("Clips MIDI : Kick C1, Snare D1, Ghost D#1, Rim C#1, Hat F#1 / A#1, Crash C#2, Perc E1 \xc2\xb7 C0 coupe tout"));
         chokeAllBtn.setClickingTogglesState (true);
@@ -258,6 +263,7 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
         };
         lane.inspector.onLock = [this] (int l, int st) { if (grid.onLockStep) grid.onLockStep (l, st); };
         lane.inspector.onEdited = [this] { grid.repaint(); };
+        lane.onAltLock = [this] { grid.repaint(); };
 
         struct K { const char* label; const char* id; std::function<juce::String (float)> fmt; };
         const K ks[] = {
@@ -394,6 +400,8 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
     void setPage (int pg)
     {
         page = pg;
+        if (pg == 1 || pg == 4) sonsPage = pg;
+        tabCap.setVisible (pg == 1 || pg == 4); subLib.setVisible (pg == 1 || pg == 4); chokeAllBtn.setVisible (pg == 3);
         const bool seq = pg == 0;
         grid.setVisible (seq && ! editorOpen); lane.setVisible (seq && ! editorOpen);
         editor.setVisible (seq && editorOpen);
@@ -467,6 +475,15 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
             bgKey = key; bgScale = sc;
         }
         g.drawImageTransformed (bgCache, juce::AffineTransform::scale (1.0f / sc));
+        if (page == 1 || page == 3 || page == 4)
+        {
+            const auto& t = ctx.th();
+            g.setColour (t.sub.withAlpha (0.3f));
+            g.fillRect (subBar.getX() + 24, subBar.getBottom() - 1, subBar.getWidth() - 48, 1);
+            g.setFont (font (11.0f, true)); g.setColour (t.sub);
+            g.drawText (page == 3 ? juce::String::fromUTF8 ("MIX \xc2\xb7 ENVOIS, SORTIES ET CHOKE") : juce::String::fromUTF8 ("SONS \xc2\xb7 MACHINES, MES KITS ET CAPTURE"),
+                        subBar.withTrimmedRight (24).withTrimmedLeft (400), juce::Justification::centredRight);
+        }
         paintLcd (g);
     }
 
@@ -518,7 +535,7 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
         g.setFont (sf); g.setColour (t.headSub);
         g.drawText (juce::String::fromUTF8 ("TY-12 \xc2\xb7 FOUDRE AUDIO"), 82, 46, 220, 14, juce::Justification::centredLeft);
         // logement des onglets
-        auto tabs = tabSeq.getBounds().getUnion (tabLib.getBounds()).toFloat().expanded (4.0f);
+        auto tabs = tabSeq.getBounds().getUnion (tabMix.getBounds()).toFloat().expanded (4.0f);
         paintInset (g, tabs, 9.0f, t.headTx.withAlpha (t.head.getPerceivedBrightness() > 0.5f ? 0.9f : 0.25f));
 
         // écran
@@ -573,18 +590,22 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
     {
         // en-tête
         tabSeq.setBounds (300, 18, 116, 38);
-        tabCap.setBounds (420, 18, 96, 38);
-        tabMix.setBounds (520, 18, 62, 38);
-        tabLib.setBounds (586, 18, 70, 38);
+        tabLib.setBounds (420, 18, 80, 38);
+        tabMix.setBounds (504, 18, 68, 38);
         settingsBtn.setBounds (baseW - 24 - 44, 18, 44, 38);
-        chokeAllBtn.setBounds (settingsBtn.getX() - 8 - 122, 18, 122, 38);
-        redoBtn.setBounds (chokeAllBtn.getX() - 10 - 42, 18, 42, 38);
+        redoBtn.setBounds (settingsBtn.getX() - 14 - 42, 18, 42, 38);
         undoBtn.setBounds (redoBtn.getX() - 6 - 42, 18, 42, 38);
-        lcdArea = { 676, 16, undoBtn.getX() - 12 - 676, 42 };
+        lcdArea = { 594, 16, undoBtn.getX() - 12 - 594, 42 };
 
         auto body = juce::Rectangle<int> (0, headerH, baseW, baseH - headerH);
-        capture.setBounds (body);
         settingsPage.setBounds (body);
+        // sous-barre des pages SONS (bibliothèque / capture) et MIX (choke global)
+        auto sub = body.removeFromTop (46);
+        subBar = sub;
+        subLib.setBounds (24, sub.getY() + 10, 150, 30);
+        tabCap.setBounds (180, sub.getY() + 10, 190, 30);
+        chokeAllBtn.setBounds (24, sub.getY() + 10, 150, 30);
+        capture.setBounds (body);
         mixPage.setBounds (body);
         libPage.setBounds (body);
 
@@ -648,7 +669,9 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
     MixPage mixPage;
     LibraryPage libPage;
     SampleEditor editor;
-    Pill tabSeq, tabCap, tabMix, tabLib, fillSet, chokeAllBtn, undoBtn, redoBtn, settingsBtn;
+    Pill tabSeq, tabCap, subLib, tabMix, tabLib, fillSet, chokeAllBtn, undoBtn, redoBtn, settingsBtn;
+    int sonsPage = 4;
+    juce::Rectangle<int> subBar;
     juce::uint32 uiActiveUntil = 0;
     int undoTick = 0;
     juce::SharedResourcePointer<juce::TooltipWindow> tooltips;

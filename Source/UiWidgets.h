@@ -273,6 +273,9 @@ namespace tui
     public:
         explicit SnapSlider (Ctx& c) : ctx (c) {}
         bool ctrlInteger = false;   // Ctrl maintenu = valeurs entières (demi-tons)
+        std::function<void (const juce::MouseEvent&)> beforeDown, afterUp;
+        void mouseDown (const juce::MouseEvent& e) override { if (beforeDown) beforeDown (e); juce::Slider::mouseDown (e); }
+        void mouseUp (const juce::MouseEvent& e) override { juce::Slider::mouseUp (e); if (afterUp) afterUp (e); }
         double snapValue (double v, DragMode) override
         {
             if (ctrlInteger && juce::ModifierKeys::currentModifiers.isCtrlDown()) return std::round (v);
@@ -298,10 +301,33 @@ namespace tui
             slider.setVelocityModeParameters (1.0, 1, 0.0, true, juce::ModifierKeys::shiftModifier);
             slider.addListener (this);
             addAndMakeVisible (slider);
+            // Alt + tourner : verrou sur le pas choisi (comme maintenir un pas et tourner un potard sur une boîte à rythmes)
+            slider.beforeDown = [this] (const juce::MouseEvent& e)
+            {
+                if (locked || ! e.mods.isAltDown() || ! altLockSet || ! altLockGet || (altLockReady && ! altLockReady())) return;
+                const auto id = attachedId;
+                setLockMode (altLockGet, altLockSet);
+                attachedId = id; altDragging = true;
+            };
+            slider.afterUp = [this] (const juce::MouseEvent&)
+            {
+                if (! altDragging) return;
+                altDragging = false;
+                if (onAltLockDone) onAltLockDone();
+                if (attachedId.isNotEmpty()) attach (attachedId);
+            };
         }
+
+        // verrou à la volée (Alt + glisser) : fourni par le panneau de piste
+        std::function<bool()> altLockReady;
+        std::function<float()> altLockGet;
+        std::function<void (float)> altLockSet;
+        std::function<void()> onAltLockDone;
+        std::function<void (float)> onUserMove;   // mouvement fait à la main (motion rec)
 
         void attach (const juce::String& paramId)
         {
+            attachedId = paramId;
             locked = false; lockGet = nullptr; lockSet = nullptr;
             slider.onValueChange = nullptr;
             att.reset();
@@ -365,12 +391,17 @@ namespace tui
         }
         SnapSlider slider;
     private:
-        void sliderValueChanged (juce::Slider*) override { repaint(); }
+        void sliderValueChanged (juce::Slider*) override
+        {
+            repaint();
+            if (! locked && onUserMove && slider.isMouseButtonDown()) onUserMove ((float) slider.getValue());
+        }
         Ctx& ctx;
         juce::String label;
         juce::RangedAudioParameter* param = nullptr;
         std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> att;
-        bool locked = false;
+        bool locked = false, altDragging = false;
+        juce::String attachedId;
         std::function<float()> lockGet;
         std::function<void (float)> lockSet;
     };

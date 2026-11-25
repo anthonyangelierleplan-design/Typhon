@@ -32,6 +32,16 @@ int main()
           { Step s; s.vel = 80; s.prob = pr; s.nudge = nd; s.flam = fl; s.pitch = -12; Step u = Step::unpack (s.pack()); ok2 &= u.prob == pr && u.nudge == nd && u.flam == (bool) fl && u.pitch == -12 && u.vel == 80; }
           Step e = Step::unpack (0); ok2 &= ! e.on() && e.pitch == 0 && e.prob == 100 && e.nudge == 0;
           CHECK (ok2, "pas v3 : probabilité, décalage, flam ; un pas vide n'a ni pitch ni décalage"); }
+        { bool ok3 = true;
+          for (int c = 0; c < Step::numConds; ++c) { Step s; s.vel = 90; s.cond = c; s.prob = 37; s.flam = true; Step u = Step::unpack (s.pack()); ok3 &= u.cond == c && u.prob == 37 && u.flam; }
+          CHECK (ok3, "pas : condition rangée / relue (12 conditions)");
+          Step f; f.vel = 90; f.cond = 1; Step nf = f; nf.cond = 2; Step a; a.vel = 90; a.cond = 4;   // 2:2
+          CHECK (f.condPasses (0, true) && ! f.condPasses (0, false) && nf.condPasses (3, false) && ! nf.condPasses (3, true),
+                 "condition : FILL / PAS FILL");
+          CHECK (! a.condPasses (0, false) && a.condPasses (1, false) && ! a.condPasses (2, false) && a.condPasses (3, false), "condition : 2:2 joue un tour sur deux, le second");
+          Step b; b.vel = 90; b.cond = 10;   // 3:4
+          int n = 0; for (int l = 0; l < 8; ++l) n += b.condPasses (l, false) ? 1 : 0;
+          CHECK (n == 2 && b.condPasses (2, false) && b.condPasses (6, false), "condition : 3:4 joue aux tours 3 et 7"); }
         { Pattern q; CHECK (! q.hasLocks (0, 0), "verrous : vides au départ"); q.setLock (2, 31, lkCut, 800.0f); CHECK (q.hasLocks (2, 31) && q.lock (2, 31, lkCut) == 800.0f, "verrous : écriture / lecture"); }
         Pattern p; Step h; h.vel = 100; h.len = 3; p.set (0, 4, h);
         CHECK (p.headOf (0, 5) == 4 && p.headOf (0, 6) == 4 && p.headOf (0, 7) == -1 && p.headOf (0, 3) == -1, "liaison : pas recouverts reconnus");
@@ -203,13 +213,16 @@ int main()
             void toggleSeqLen() override { len = len == 16 ? 32 : 16; } void audition (int l) override { aud = l; } void cutAll() override {}
             void undo() override { ++undos; } void redo() override {} void commit() override { ++commits; }
             std::string laneLabel (int) const override { return "SNARE"; }
+            int stripLock (int s) const override { return s == 4 ? 4 : (s == 5 ? 3 : (s == 6 ? -2 : -1)); }
+            float stripLockValue (int, int, float v) const override { return v * 1000.0f; }
         } h;
         Pattern pat; Surface sf;
         auto press = [&] (int note, int ch = 6) { uint8_t m[3] = { (uint8_t) (0x90 | ch), (uint8_t) note, 127 }; sf.handle (m, 3, pat, h); };
         auto release = [&] (int note) { uint8_t m[3] = { 0x80, (uint8_t) note, 0 }; sf.handle (m, 3, pat, h); };
         // vue PISTES : rangée du haut = kick, colonne 0 = pas 1
         press (56); CHECK (pat.get (0, 0).on(), "apc : pad en haut à gauche = kick pas 1");
-        press (56); CHECK (! pat.get (0, 0).on(), "apc : second appui efface");
+        release (56); press (56); CHECK (pat.get (0, 0).on(), "apc : pas allumé gardé tant que le pad est maintenu");
+        release (56); CHECK (! pat.get (0, 0).on(), "apc : second appui efface (au relâchement)");
         press (1); CHECK (pat.get (7, 1).on(), "apc : rangée du bas = perc");
         press (nRight, 0); press (56 + 3); CHECK (pat.get (0, 11).on() && sf.page.load() == 1, "apc : page 2 = pas 9-16");
         press (nShift, 0); press (56 + 3); release (nShift);
@@ -240,6 +253,17 @@ int main()
         press (nStripTouch0 + 1, 0); sf.handle (pb, 3, pat, h); release (nStripTouch0 + 1);
         CHECK (h.strip[1] > 0.999f, "apc : strip 2 touché = Bits");
         sf.view.store (0); sf.page.store (0); pat.set (0, 4, Step()); press (60); CHECK (pat.get (0, 4).on() && pat.get (0, 4).pitch == 0 && (sf.dirtyPads.load() >> 60 & 1), "apc : pas posé sans pitch, LED redessinée tout de suite");
+        // pas maintenu + strip = verrou sur ce pas (le pas n'est pas éteint au relâchement)
+        {
+            release (60); press (60);   // pas 5 du kick déjà allumé : maintenu
+            press (nStripTouch0 + 4, 0); uint8_t s4[3] = { 0xE4, 0x00, 0x40 }; sf.handle (s4, 3, pat, h); release (nStripTouch0 + 4);
+            press (nStripTouch0 + 6, 0); uint8_t s6[3] = { 0xE6, 0x00, 0x00 }; sf.handle (s6, 3, pat, h); release (nStripTouch0 + 6);
+            release (60);
+            CHECK (pat.get (0, 4).on() && std::fabs (pat.lock (0, 4, 4) - 500.0f) < 1.0f && pat.get (0, 4).pitch == -12 && h.strip[4] == 0.0f,
+                   "apc : maintenir un pas + strip Filtre = verrou (%.0f), strip Pitch = pitch du pas (%d), réglage de piste intact", pat.lock (0, 4, 4), pat.get (0, 4).pitch);
+            press (nStripTouch0 + 4, 0); sf.handle (s4, 3, pat, h); release (nStripTouch0 + 4);
+            CHECK (h.strip[4] > 0.4f, "apc : sans pas maintenu, le strip règle la piste");
+        }
         // vue Session perdue / retrouvée
         uint8_t rep[9] = { 0xF0, 0x47, 0x00, 0x53, 0x19, 0x00, 0x01, 0x02, 0xF7 }; sf.handle (rep, 9, pat, h);
         CHECK (! sf.sessionView.load(), "apc : vue Note de l'APC64 détectée");

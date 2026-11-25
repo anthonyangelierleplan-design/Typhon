@@ -52,6 +52,29 @@ namespace typhon
         bool split = false, rev = false;
         int prob = 100, nudge = 0;
         bool flam = false;
+        int cond = 0;   // condition de jeu (voir condName) : 0 toujours, 1 FILL, 2 PAS FILL, 3.. A:B
+
+        static constexpr int numConds = 12;
+        static const char* condName (int c)
+        {
+            static const char* n[numConds] = { "TOUJOURS", "FILL", "PAS FILL", "1:2", "2:2", "1:3", "2:3", "3:3", "1:4", "2:4", "3:4", "4:4" };
+            return n[c < 0 || c >= numConds ? 0 : c];
+        }
+        // A:B : joue au passage A d'un cycle de B passages de la piste
+        static void condRatio (int c, int& a, int& b)
+        {
+            static const int A[numConds] = { 0, 0, 0, 1, 2, 1, 2, 3, 1, 2, 3, 4 }, B[numConds] = { 0, 0, 0, 2, 2, 3, 3, 3, 4, 4, 4, 4 };
+            a = A[c < 0 || c >= numConds ? 0 : c]; b = B[c < 0 || c >= numConds ? 0 : c];
+        }
+        // le pas joue-t-il à ce passage (loop = nombre de tours de la piste), fill en cours ou non ?
+        bool condPasses (int64_t loop, bool fillOn) const
+        {
+            if (cond == 1) return fillOn;
+            if (cond == 2) return ! fillOn;
+            int a, b; condRatio (cond, a, b);
+            if (b <= 0) return true;
+            return (int) (((loop % b) + b) % b) == a - 1;
+        }
 
         bool on() const { return vel > 0; }
 
@@ -75,7 +98,8 @@ namespace typhon
                  | ((vr & 15u) << 25);
             const uint32_t pr = (uint32_t) (100 - clampi (prob, 0, 100));
             const uint32_t nd = (uint32_t) clampi (nudge, -50, 50);
-            const uint32_t hi = (pr & 127u) | ((nd & 127u) << 7) | ((flam ? 1u : 0u) << 14);
+            const uint32_t cd = (uint32_t) clampi (cond, 0, numConds - 1);
+            const uint32_t hi = (pr & 127u) | ((nd & 127u) << 7) | ((flam ? 1u : 0u) << 14) | ((cd & 15u) << 15);
             return (uint64_t) lo | ((uint64_t) hi << 32);
         }
         static Step unpack (uint64_t w)
@@ -96,6 +120,7 @@ namespace typhon
             s.prob = 100 - (int) (hi & 127); if (s.prob < 0) s.prob = 100;
             int n = (int) ((hi >> 7) & 127); if (n >= 64) n -= 128; s.nudge = clampi (n, -50, 50);
             s.flam = ((hi >> 14) & 1) != 0;
+            s.cond = (int) ((hi >> 15) & 15); if (s.cond >= numConds) s.cond = 0;
             return s;
         }
     };

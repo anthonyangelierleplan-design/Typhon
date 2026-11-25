@@ -37,8 +37,8 @@ namespace tui
                 b->textSize = 11.0f;
                 b->isOn = [this, k] { return ctx.proc.currentPattern() == k; };
                 b->onClick = [this, k] { ctx.proc.selectPattern (k); repaint(); };
-                b->setTooltip (isFill ? juce::String::fromUTF8 ("Pattern FILL : le fill que tu Ã©" "cris toi-mÃªme (RÃ©glages fill > source)")
-                                      : juce::String::fromUTF8 ("Pattern ") + b->getButtonText() + juce::String::fromUTF8 (" Â· change au dÃ©" "but de la boucle suivante Â· clic droit : copier, effacer"));
+                b->setTooltip (isFill ? juce::String::fromUTF8 ("Pattern FILL : le fill que tu \xc3\xa9" "cris toi-m\xc3\xaame (R\xc3\xa9glages fill > source)")
+                                      : juce::String::fromUTF8 ("Pattern ") + b->getButtonText() + juce::String::fromUTF8 (" \xc2\xb7 change au d\xc3\xa9" "but de la boucle suivante \xc2\xb7 clic droit : copier, effacer"));
                 b->addMouseListener (this, false);
                 addAndMakeVisible (b);
             }
@@ -75,6 +75,12 @@ namespace tui
 
         std::function<void (int, int, bool)> onFocusStep;   // (piste, pas, montrer le panneau) : le pas à éditer dans le panneau
         int focusLane = -1, focusStep = -1;
+        static juce::String speedTag (int sp)
+        {
+            static const char* t[6] = { "x2", "x1,5", "x1", "x3/4", "x1/2", "x1/4" };
+            return t[juce::jlimit (0, 5, sp)];
+        }
+
         void setFocus (int lane, int st, bool reveal) { focusLane = lane; focusStep = st; if (onFocusStep) onFocusStep (lane, st, reveal); repaint(); }
 
         void patternMenu (int k)
@@ -233,11 +239,19 @@ namespace tui
                     g.setFont (font (15.0f, true));
                     g.drawText (laneName (lane), tr, juce::Justification::centredLeft);
                 }
-                if (multi)
                 {
-                    const int out = (int) ctx.proc.apvts.getRawParameterValue (pid (lane, "out"))->load();
-                    g.setFont (mono (10.5f)); g.setColour (t.sub);
-                    g.drawText (juce::String (out * 2 + 1) + "/" + juce::String (out * 2 + 2), nr.reduced (8, 0).toNearestInt(), juce::Justification::centredRight);
+                    // repères à droite du nom : vitesse et longueur propres, sortie en multi-out
+                    juce::StringArray tags;
+                    const int sp = (int) ctx.proc.apvts.getRawParameterValue (pid (lane, "spd"))->load();
+                    const int ln = (int) ctx.proc.apvts.getRawParameterValue (pid (lane, "len"))->load();
+                    if (sp != 2) tags.add (speedTag (sp));
+                    if (ln > 0) tags.add (juce::String (ln) + "p");
+                    if (multi) { const int out = (int) ctx.proc.apvts.getRawParameterValue (pid (lane, "out"))->load(); tags.add (juce::String (out * 2 + 1) + "/" + juce::String (out * 2 + 2)); }
+                    if (! tags.isEmpty())
+                    {
+                        g.setFont (mono (10.5f)); g.setColour (sp != 2 || ln > 0 ? valueColour (t) : t.sub);
+                        g.drawText (tags.joinIntoString (" "), nr.reduced (8, 0).toNearestInt(), juce::Justification::centredRight);
+                    }
                 }
 
                 // MUTE / SOLO
@@ -335,7 +349,7 @@ namespace tui
                         if (s.var > 0)
                         {
                             g.setColour (t.bg); g.setFont (mono (9.0f, true));
-                            g.drawText ("v" + juce::String (s.var), r.toNearestInt().reduced (2, 3), juce::Justification::centredBottom);
+                            g.drawText ("v" + juce::String (s.var), r.toNearestInt().reduced (3, 6), juce::Justification::bottomLeft);
                         }
                         if (s.dur != 0)
                         {
@@ -353,8 +367,17 @@ namespace tui
                     {
                         if (s.prob < 100)
                         {
-                            g.setColour (t.bg.withAlpha (0.85f)); g.setFont (mono (9.0f, true));
-                            g.drawText (juce::String (s.prob) + "%", r.toNearestInt().reduced (3, 3), juce::Justification::bottomLeft);
+                            // probabilité : jauge en bas du pas (pleine = 100 %), le texte reste dans l'onglet PAS
+                            const auto bar = juce::Rectangle<float> (r.getX() + 4.0f, r.getBottom() - 5.0f, r.getWidth() - 8.0f, 2.5f);
+                            g.setColour (t.bg.withAlpha (0.35f)); g.fillRect (bar);
+                            g.setColour (t.bg.withAlpha (0.9f)); g.fillRect (bar.withWidth (bar.getWidth() * (float) s.prob / 100.0f));
+                        }
+                        if (s.cond != 0)
+                        {
+                            // condition de jeu : F = seulement pendant le fill, !F = jamais pendant le fill, A:B = 1 tour sur B
+                            const juce::String c = s.cond == 1 ? "F" : (s.cond == 2 ? "!F" : juce::String (typhon::Step::condName (s.cond)));
+                            g.setColour (t.bg.withAlpha (0.9f)); g.setFont (mono (9.0f, true));
+                            g.drawText (c, r.toNearestInt().reduced (3, 6), juce::Justification::bottomRight);
                         }
                         if (s.nudge != 0)
                         {
@@ -384,10 +407,11 @@ namespace tui
                         g.drawRoundedRectangle (r.expanded (1.5f), 5.0f, 2.5f);
                     }
                 }
-                // tête de lecture
-                if (play >= off && play < off + 16)
+                // tête de lecture (propre à la piste : sa longueur et sa vitesse)
+                const int lpl = ctx.proc.lanePlayStep (lane);
+                if (lpl >= off && lpl < off + 16)
                 {
-                    auto r = stepRect (lane, play).expanded (1.0f);
+                    auto r = stepRect (lane, lpl).expanded (1.0f);
                     g.setColour (t.lcdTx.withAlpha (0.9f));
                     g.drawRoundedRectangle (r, 5.0f, 1.5f);
                 }
@@ -771,55 +795,27 @@ namespace tui
             const int head = s.on() ? j : pat.headOf (lane, j);
             const int at = head >= 0 ? head : j;
             s = pat.get (lane, at);
-            const auto times = juce::String::fromUTF8 ("\xc3\x97");
 
-            // Menu court : vélocités en haut, le reste rangé par thème
-            juce::PopupMenu m, rythm, pitchM, chokeM, lockM;
+            // Menu court : la fiche complète du pas est l'onglet PAS (un seul endroit pour tout régler)
+            juce::PopupMenu m, lockM;
             m.addSectionHeader (laneName (lane) + juce::String::fromUTF8 (" \xc2\xb7 pas ") + juce::String (at + 1));
             m.addItem (1, "Normal", true, s.on() && s.vel >= 90 && s.vel < 120);
             m.addItem (2, "Accent", true, s.on() && s.vel >= 120);
             m.addItem (3, "Doux (ghost)", true, s.on() && s.vel < 90);
             m.addSeparator();
-
-            rythm.addItem (4, "Diviser en 2", true, s.split);
-            rythm.addItem (5, "Ratchet " + times + "2", true, ! s.split && s.ratchet == 2);
-            rythm.addItem (6, "Ratchet " + times + "3", true, ! s.split && s.ratchet == 3);
-            rythm.addItem (7, "Ratchet " + times + "4", true, ! s.split && s.ratchet == 4);
-            rythm.addSeparator();
-            rythm.addItem (8, juce::String::fromUTF8 ("D\xc3\xa9lier"), s.len > 1);
-            juce::String rTag = s.split ? " (1/2)" : (s.ratchet > 1 ? " (" + times + juce::String (s.ratchet) + ")" : juce::String());
-            m.addSubMenu ("Rythme" + rTag, rythm);
-
-            for (int p = 12; p >= -12; --p)
-                pitchM.addItem (200 + p + 12, (p > 0 ? "+" : "") + juce::String (p) + (p == 0 ? " (normal)" : " st"), true, s.pitch == p);
-            m.addSubMenu ("Pitch" + (s.pitch != 0 ? "  (" + juce::String (s.pitch > 0 ? "+" : "") + juce::String (s.pitch) + ")" : juce::String()), pitchM);
-
-            chokeM.addItem (20, "Suit la piste", true, s.choke == 0);
-            chokeM.addItem (21, "Toujours (coupe la note d'avant)", true, s.choke == 1);
-            chokeM.addItem (22, "Laisse sonner", true, s.choke == 2);
-            m.addSubMenu ("Choke" + juce::String (s.choke == 1 ? " (toujours)" : (s.choke == 2 ? " (laisse sonner)" : "")), chokeM);
-
-            juce::PopupMenu durM;
-            durM.addItem (40, "Suit la piste", true, s.dur == 0);
-            durM.addItem (41, juce::String::fromUTF8 ("Limit\xc3\xa9" "e au pas"), true, s.dur == 1);
-            durM.addItem (42, juce::String::fromUTF8 ("Libre (jou\xc3\xa9" "e comme r\xc3\xa9gl\xc3\xa9" "e)"), true, s.dur == 2);
-            m.addSubMenu (juce::String::fromUTF8 ("Dur\xc3\xa9" "e") + juce::String (s.dur == 1 ? juce::String::fromUTF8 (" (limit\xc3\xa9" "e)") : (s.dur == 2 ? juce::String (" (libre)") : juce::String())), durM);
-            const int nVar = ctx.proc.laneVariants (lane);
-            if (nVar > 1)
+            m.addItem (11, juce::String::fromUTF8 ("R\xc3\xa9glages du pas (onglet PAS)..."));
             {
-                juce::PopupMenu varM;
-                varM.addItem (300, "Suit la piste", true, s.var == 0);
-                for (int v = 1; v <= std::min (15, nVar); ++v) varM.addItem (300 + v, "Variante " + juce::String (v), true, s.var == v);
-                m.addSubMenu ("Variante" + juce::String (s.var > 0 ? " (" + juce::String (s.var) + ")" : juce::String()), varM);
+                juce::PopupMenu condM;
+                for (int c = 0; c < Step::numConds; ++c) condM.addItem (500 + c, Step::condName (c), true, s.cond == c);
+                m.addSubMenu ("Condition" + (s.cond != 0 ? juce::String (" (") + Step::condName (s.cond) + ")" : juce::String()), condM);
             }
-            m.addItem (10, juce::String::fromUTF8 ("Jouer \xc3\xa0 l'envers (reverse)"), true, s.rev);
-
-            lockM.addItem (30, juce::String::fromUTF8 ("R\xc3\xa9gler ce pas..."));
+            lockM.addItem (30, juce::String::fromUTF8 ("R\xc3\xa9gler les verrous de ce pas..."));
             lockM.addItem (31, "Effacer les verrous", pat.hasLocks (lane, at));
             m.addSubMenu ("Verrous" + juce::String (pat.hasLocks (lane, at) ? juce::String::fromUTF8 (" \xe2\x97\x8f") : juce::String()), lockM);
+            if (s.len > 1) m.addItem (8, juce::String::fromUTF8 ("D\xc3\xa9lier"));
             m.addSeparator();
-            m.addItem (9, "Effacer le pas", s.on() || pat.hasLocks (lane, at));
             if (! clipBlock.empty()) m.addItem (50, juce::String::fromUTF8 ("Coller ici (Ctrl+V)"));
+            m.addItem (9, "Effacer le pas (Suppr)", s.on() || pat.hasLocks (lane, at));
 
             juce::Component::SafePointer<SeqGrid> safe (this);
             diag::ui ("menu du pas : ouverture");
@@ -845,10 +841,12 @@ namespace tui
                         case 30: turnOn(); pat.set (lane, at, x); if (safe->onLockStep) safe->onLockStep (lane, at); safe->repaint(); return;
                         case 40: case 41: case 42: turnOn(); x.dur = r - 40; break;
                         case 50: safe->pasteAt (lane, at); return;
+                        case 11: turnOn(); pat.set (lane, at, x); safe->setFocus (lane, at, true); return;
                         case 31: pat.clearLocks (lane, at); break;
                         default:
                             if (r >= 200 && r <= 224) { turnOn(); x.pitch = r - 212; }
                             if (r >= 300 && r <= 315) { turnOn(); x.var = r - 300; }
+                            if (r >= 500 && r < 500 + Step::numConds) { turnOn(); x.cond = r - 500; }
                             break;
                     }
                     pat.set (lane, at, x);
@@ -881,9 +879,16 @@ namespace tui
                 lenM.addItem (400, "Comme le pattern", true, cur == 0);
                 for (int v = 1; v <= 32; ++v) lenM.addItem (400 + v, juce::String (v) + " pas", true, cur == v);
                 m.addSubMenu ("Longueur de la piste" + juce::String (cur > 0 ? " (" + juce::String (cur) + ")" : juce::String()), lenM);
+                juce::PopupMenu spdM;
+                const int sp = (int) ap.getRawParameterValue (pid (lane, "spd"))->load();
+                if (auto* prm = dynamic_cast<juce::AudioParameterChoice*> (ap.getParameter (pid (lane, "spd"))))
+                    for (int v = 0; v < prm->choices.size(); ++v) spdM.addItem (450 + v, prm->choices[v], true, sp == v);
+                m.addSubMenu ("Vitesse de la piste" + juce::String (sp != 2 ? " (" + speedTag (sp) + ")" : juce::String()), spdM);
             }
             m.addSeparator();
             m.addItem (6, "Effacer la piste");
+            { bool any = false; for (int j = 0; j < numSteps; ++j) any |= ctx.proc.pattern.hasLocks (lane, j);
+              m.addItem (13, juce::String::fromUTF8 ("Effacer les verrous de la piste (motion)"), any); }
             m.addItem (7, juce::String::fromUTF8 ("Copier le pattern de cette piste"));
             m.addItem (8, "Coller", clip.size() == (size_t) numSteps);
 
@@ -919,10 +924,14 @@ namespace tui
                                 if (auto* prm = P.apvts.getParameter (pid (o, "steplen"))) prm->setValueNotifyingHost (r == 11 ? 1.0f : 0.0f);
                             break;
                         case 6: for (int j = 0; j < numSteps; ++j) { P.pattern.set (lane, j, Step()); P.pattern.clearLocks (lane, j); } break;
+                        case 13: for (int j = 0; j < numSteps; ++j) P.pattern.clearLocks (lane, j); break;
                         default:
                             if (r >= 400 && r <= 432)
                                 if (auto* prm = dynamic_cast<juce::AudioParameterInt*> (P.apvts.getParameter (pid (lane, "len"))))
                                 { prm->beginChangeGesture(); *prm = r - 400; prm->endChangeGesture(); }
+                            if (r >= 450 && r < 456)
+                                if (auto* prm = dynamic_cast<juce::AudioParameterChoice*> (P.apvts.getParameter (pid (lane, "spd"))))
+                                { prm->beginChangeGesture(); *prm = r - 450; prm->endChangeGesture(); }
                             break;
                         case 7: safe->clip.clear(); for (int j = 0; j < numSteps; ++j) safe->clip.push_back (P.pattern.steps[lane][j].load()); break;
                         case 8: for (int j = 0; j < numSteps && j < (int) safe->clip.size(); ++j) P.pattern.steps[lane][j].store (safe->clip[(size_t) j]); break;

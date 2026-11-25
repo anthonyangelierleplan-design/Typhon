@@ -123,6 +123,29 @@ int main (int argc, char** argv)
             const auto poly = hitsOver (3, 2.0 - 0.01);   // 16 pas : 0,3,6,9,12,15 = 6 coups
             setParam (p, typhon::pid (3, "len"), 0.0f);
             CHECK (poly == 6, "longueur de piste 3 pas : %u coups sur 16 pas (6)", poly);
+            // vitesse par piste : x2 = deux fois plus de pas, x1/2 = moitié, triolets x1,5
+            clearAll();
+            { typhon::Step x; x.vel = 100; for (int st = 0; st < 16; ++st) p.pattern.set (3, st, x); }
+            setParam (p, typhon::pid (3, "spd"), 0.0f); h.ppq = 0.0;
+            const auto s2 = hitsOver (3, 2.0 - 0.01);
+            setParam (p, typhon::pid (3, "spd"), 4.0f); h.ppq = 0.0;
+            const auto sh = hitsOver (3, 2.0 - 0.01);
+            setParam (p, typhon::pid (3, "spd"), 1.0f); h.ppq = 0.0;
+            const auto st3 = hitsOver (3, 2.0 - 0.01);
+            setParam (p, typhon::pid (3, "spd"), 2.0f);
+            CHECK (s2 == 32 && sh == 8 && st3 == 24, "vitesse de piste : x2 = %u coups (32), x1/2 = %u (8), x1,5 = %u (24) sur une mesure", s2, sh, st3);
+            // conditions : 2:2 = un tour sur deux ; FILL = seulement pendant le fill ; PAS FILL = jamais pendant le fill
+            clearAll();
+            { typhon::Step x; x.vel = 100; x.cond = 4; p.pattern.set (3, 0, x); }
+            h.ppq = 0.0;
+            const auto c22 = hitsOver (3, 8.0 - 0.01);   // 4 tours
+            { typhon::Step x; x.vel = 100; x.cond = 1; p.pattern.set (3, 0, x); x.cond = 2; p.pattern.set (3, 8, x); }
+            h.ppq = 0.0;
+            const auto noFill = hitsOver (3, 2.0 - 0.01);
+            setParam (p, "fill", 1.0f); h.ppq = 0.0;
+            const auto inFill = hitsOver (3, 2.0 - 0.01);
+            setParam (p, "fill", 0.0f);
+            CHECK (c22 == 2 && noFill == 1 && inFill == 1, "conditions : 2:2 = %u coups sur 4 tours (2), FILL / PAS FILL hors fill %u (1), pendant le fill %u (1)", c22, noFill, inFill);
             // step loop 2 pas
             clearAll();
             for (int st = 0; st < 16; ++st) { typhon::Step x; x.vel = 100; p.pattern.set (3, st, x); }
@@ -502,7 +525,7 @@ int main (int argc, char** argv)
                         for (auto* ch : c->getChildren()) if (auto* f = findPanel (ch)) return f;
                         return nullptr;
                     };
-                    typhon::Step x; x.vel = 112; x.ratchet = 3; x.flam = true; x.prob = 75; x.nudge = 20; x.pitch = -2;
+                    typhon::Step x; x.vel = 112; x.ratchet = 3; x.flam = true; x.prob = 75; x.nudge = 20; x.pitch = -2; x.cond = 6;
                     p.pattern.set (1, 6, x);
                     p.settings.panelOpen.store (1);
                     if (auto* b = dynamic_cast<juce::Button*> (findBtn (ui, juce::String::fromUTF8 ("S\xc3\x89QUENCE")))) b->triggerClick();

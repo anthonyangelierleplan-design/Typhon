@@ -80,6 +80,7 @@ Typhon ouvre lui-même l'APC64 et le passe en mode DAW, comme Ableton le fait : 
 | Scènes 6-8 (maintenir) | ROLL 1/8, 1/16, 1/32 sur la piste choisie |
 | Boutons de piste | choisir la piste (bouton Mute allumé : muter) · ▲ ▼ = piste précédente / suivante |
 | Shift + pad | accent / note fantôme |
+| Maintenir un pas + strip Filtre, Decay ou Pitch | verrou sur ce pas (le pas reste allumé) ; un pas allumé tapé seul s'éteint au relâchement |
 | Clear maintenu + pad ou piste | effacer la piste |
 | Duplicate | recopier la page sur la suivante (ou 1-16 → 17-32) |
 | Undo / Shift + Undo | annuler / rétablir |
@@ -94,7 +95,16 @@ Onglet STRETCH de chaque piste : **Simple** (allonge sans changer la hauteur) ou
 
 - **Patterns A à H + FILL** en haut de la grille : le changement se fait au début de la boucle suivante (clignote en attendant). Clic droit : copier vers un autre pattern, effacer. Sur l'APC64 : Shift + scène 1 à 8.
 - **Fill écrit** : choisis FILL, écris ton fill, reviens sur A..H ; Réglages fill > Source = Pattern FILL.
-- **Onglet PAS** (clic droit sur un pas) : vélocité, sous-pas 1 / 1/2 / 1/3 / 1/4, division, **flam**, **probabilité**, **décalage hors grille** (en ms au tempo), pitch, variante, durée, choke, reverse, verrous.
+- **Onglet PAS** (clic sur un pas) : vélocité, sous-pas 1 / 1/2 / 1/3 / 1/4, division, **flam**, **probabilité**, **décalage hors grille** (en ms au tempo), pitch, variante, durée, choke, reverse, verrous.
 - **Longueur par piste** (clic droit sur le nom de la piste) : polyrythmies, 1 à 32 pas.
 - **ROLL** et **STEP LOOP** à maintenir sur la façade (clic droit : cadence / longueur).
 - Polices embarquées sous licence OFL (Resources/fonts).
+
+## Finitions (audit d'ergonomie)
+
+- **Une seule fiche par pas** : l'onglet PAS. Le clic droit sur un pas ne garde que vélocité, condition, verrous, délier, coller, effacer.
+- **Verrous à la volée** : Alt + tourner un potard de la piste (volume, pan, début, decay, filtre, envois, position du grain) = verrou sur le pas choisi, ou sur tous les pas allumés de la sélection. À l'APC64 : maintenir le pas et toucher un strip.
+- **Conditions par pas** (onglet PAS, à côté de la probabilité) : FILL (ne joue que pendant un fill, même si le fill remplace la piste), PAS FILL, et 1:2, 2:2, 1:3… 4:4 (joue au tour A sur B de la piste). L'export MIDI déroule assez de mesures pour les placer.
+- **Vitesse par piste** (clic droit sur le nom) : x2, x1,5 (triolets), x1, x3/4, x1/2, x1/4. Avec la longueur par piste, polyrythmies façon TR-8S / Elektron. La tête de lecture suit chaque piste.
+- **MOTION REC** (● REC en haut du panneau de piste) : en lecture, les mouvements des potards verrouillables s'enregistrent sur les pas joués. Clic droit sur la piste > Effacer les verrous de la piste.
+- **SONS** regroupe la bibliothèque et la capture EZdrummer ; **MIX** devient une vraie table (volume, pan, envois, duck) et accueille CHOKE GLOBAL.

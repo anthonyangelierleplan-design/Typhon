@@ -115,6 +115,9 @@ public:
     std::atomic<int> stepLoopLen { 0 };        // STEP LOOP maintenu : 0 = off, sinon nombre de pas
     std::atomic<int> uiRollDiv { 0 };          // ROLL depuis l'interface : 0 off, 1 = 1/8, 2 = 1/16, 3 = 1/32
     std::atomic<int> uiRollLane { 1 };
+    // vitesse propre à la piste (multiplicateur de la double-croche)
+    double laneSpeed (int lane) const { static const double m[6] = { 2.0, 1.5, 1.0, 0.75, 0.5, 0.25 }; return m[juce::jlimit (0, 5, (int) laneSpdP[lane]->load())]; }
+    int lanePlayStep (int lane) const { return laneCur[lane].load(); }   // pas joué sur cette piste (longueur et vitesse propres), -1 à l'arrêt
     int laneLength (int lane) const { const int l = (int) laneLenP[lane]->load(); return l > 0 ? std::min (l, typhon::numSteps) : seqLength(); }
 
     // --- bibliothèque de machines ------------------------------------------
@@ -253,6 +256,8 @@ private:
         void commit() override { queue.push ({ typhon::apc::Act::commit }); }
         std::string laneLabel (int l) const override;
         void selectPattern (int k) override { p.selectPattern (k); }
+        int stripLock (int s) const override { return s == 4 ? typhon::lkCut : (s == 5 ? typhon::lkDecay : (s == 6 ? -2 : -1)); }
+        float stripLockValue (int s, int l, float v) const override { auto* q = stripParam (s, l); return q ? q->convertFrom0to1 (v) : v; }
     } apcHost { *this };
     std::unique_ptr<typhon::apc::Link> apcLink;
     std::atomic<bool> cutRequest { false };
@@ -274,6 +279,11 @@ private:
     bool wasPlayingSeq = false;
     int stepLoopSize = 0; int64_t stepLoopStart = 0;
     std::atomic<float>* laneLenP[typhon::numLanes] {};
+    std::atomic<float>* laneSpdP[typhon::numLanes] {};
+    std::atomic<int> laneCur[typhon::numLanes] {};
+public:
+    std::atomic<bool> motionRec { false };   // MOTION REC (non sauvegardé)
+private:
     std::atomic<float>* pFillSrc = nullptr;
     std::atomic<float>* soloP[typhon::numLanes] {};
 public:

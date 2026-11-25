@@ -149,8 +149,8 @@ namespace tui
                 auto vr = juce::Rectangle<int> (6, getHeight() - 20, 120, 16);
                 varPrev = vr.removeFromLeft (18); varNext = vr.removeFromRight (18);
                 g.setColour (t.acc); g.setFont (mono (11.0f, true));
-                g.drawText (juce::String::fromUTF8 ("â"), varPrev, juce::Justification::centred);
-                g.drawText (juce::String::fromUTF8 ("â¶"), varNext, juce::Justification::centred);
+                g.drawText (juce::String::fromUTF8 ("\xe2\x97\x80"), varPrev, juce::Justification::centred);
+                g.drawText (juce::String::fromUTF8 ("\xe2\x96\xb6"), varNext, juce::Justification::centred);
                 g.drawText ("VAR " + juce::String ((int) paramValue ("var")) + "/" + juce::String (nv), vr, juce::Justification::centred);
             }
             g.setColour (t.lcdTx); g.setFont (mono (11.0f));
@@ -432,7 +432,7 @@ namespace tui
     // ------------------------------------------------------------------------
     //  Barre de valeur (glisser horizontalement, double-clic = valeur par défaut)
     // ------------------------------------------------------------------------
-    class ValueBar : public juce::Component
+    class ValueBar : public juce::Component, public juce::SettableTooltipClient
     {
     public:
         ValueBar (Ctx& c) : ctx (c) {}
@@ -477,7 +477,7 @@ namespace tui
     class StepInspector : public juce::Component
     {
     public:
-        explicit StepInspector (Ctx& c) : ctx (c), velBar (c), probBar (c), nudgeBar (c), pitchBar (c), varBar (c),
+        explicit StepInspector (Ctx& c) : ctx (c), velBar (c), probBar (c), condBar (c), nudgeBar (c), pitchBar (c), varBar (c),
             flamBtn (c, "FLAM", true), revBtn (c, "REVERSE", true), lockBtn (c, juce::String::fromUTF8 ("R\xc3\x89GLER CE PAS (VERROUS)")), clearBtn (c, "EFFACER")
         {
             const char* subs[5] = { "1", "1/2", "1/3", "1/4", "DIVIS\xc3\x89" };
@@ -513,6 +513,7 @@ namespace tui
             revBtn.onClick = [this] { edit ([] (typhon::Step& s) { s.rev = ! s.rev; }); };
             for (auto* b : { &flamBtn, &revBtn, &lockBtn, &clearBtn }) { addAndMakeVisible (*b); b->textSize = 11.0f; }
             lockBtn.onClick = [this] { if (stepIdx >= 0 && onLock) onLock (lane, stepIdx); };
+            lockBtn.setTooltip (juce::String::fromUTF8 ("Plus rapide : Alt + tourner un potard de la piste (volume, pan, d\xc3\xa9" "but, decay, filtre, envois, grain) pose le verrou sur ce pas \xc2\xb7 \xc3\xa0 l'APC64 : maintenir le pas et toucher le strip Filtre, Decay ou Pitch"));
             clearBtn.onClick = [this]
             {
                 if (stepIdx < 0) return;
@@ -530,6 +531,9 @@ namespace tui
             };
             bar (velBar, 1, 127, 100, [] (const typhon::Step& s) { return s.on() ? s.vel : 100; }, [] (typhon::Step& s, int v) { s.vel = v; }, nullptr);
             bar (probBar, 1, 100, 100, [] (const typhon::Step& s) { return s.prob; }, [] (typhon::Step& s, int v) { s.prob = v; }, [] (int v) { return juce::String (v) + " %"; });
+            bar (condBar, 0, typhon::Step::numConds - 1, 0, [] (const typhon::Step& s) { return s.cond; }, [] (typhon::Step& s, int v) { s.cond = v; },
+                 [] (int v) { return juce::String (typhon::Step::condName (v)); });
+            condBar.setTooltip (juce::String::fromUTF8 ("FILL : ne joue que pendant un fill \xc2\xb7 PAS FILL : se tait pendant un fill \xc2\xb7 1:2, 3:4 : joue au 1er tour sur 2, au 3e tour sur 4"));
             bar (nudgeBar, -50, 50, 0, [] (const typhon::Step& s) { return s.nudge; }, [] (typhon::Step& s, int v) { s.nudge = v; },
                  [this] (int v) { const double ms = v / 100.0 * 15000.0 / std::max (20.0, ctx.proc.hostBpm()); return (v > 0 ? "+" : "") + juce::String (juce::roundToInt (ms)) + " ms"; });
             nudgeBar.bipolar = true;
@@ -558,7 +562,7 @@ namespace tui
         {
             varBar.maxV = std::max (1, std::min (15, ctx.proc.laneVariants (lane)));
             const bool on = stepIdx >= 0 && step().on();
-            for (juce::Component* c : { (juce::Component*) &velBar, (juce::Component*) &probBar, (juce::Component*) &nudgeBar, (juce::Component*) &pitchBar,
+            for (juce::Component* c : { (juce::Component*) &velBar, (juce::Component*) &probBar, (juce::Component*) &condBar, (juce::Component*) &nudgeBar, (juce::Component*) &pitchBar,
                                         (juce::Component*) &flamBtn, (juce::Component*) &revBtn, (juce::Component*) &clearBtn })
                 c->setEnabled (on);
             varBar.setEnabled (on && ctx.proc.laneVariants (lane) > 1);
@@ -574,7 +578,7 @@ namespace tui
             if (stepIdx < 0)
             {
                 g.setColour (t.sub); g.setFont (font (13.0f));
-                g.drawFittedText (juce::String::fromUTF8 ("Clic droit sur un pas (ou allume-le) pour le r\xc3\xa9gler ici : v\xc3\xa9locit\xc3\xa9, sous-pas, flam, probabilit\xc3\xa9, d\xc3\xa9" "calage, pitch, variante, dur\xc3\xa9" "e, choke."),
+                g.drawFittedText (juce::String::fromUTF8 ("Clique un pas pour le r\xc3\xa9gler ici : v\xc3\xa9locit\xc3\xa9, sous-pas, flam, probabilit\xc3\xa9, condition, d\xc3\xa9" "calage, pitch, variante, dur\xc3\xa9" "e, choke. Alt + potard de la piste : verrou sur le pas choisi."),
                                   getLocalBounds().reduced (0, 10), juce::Justification::topLeft, 6);
                 return;
             }
@@ -611,7 +615,11 @@ namespace tui
                 for (auto* b : subBtns) { b->setBounds (a.removeFromLeft (b == subBtns.getLast() ? w + 14 : w - 3)); a.removeFromLeft (4); }
                 flamBtn.setBounds (a);
             }
-            probBar.setBounds (row ("PROBABILIT\xc3\x89", 22));
+            {
+                auto a = row ("PROBABILIT\xc3\x89 \xc2\xb7 CONDITION", 22);
+                probBar.setBounds (a.removeFromLeft (a.getWidth() / 2 - 6)); a.removeFromLeft (12);
+                condBar.setBounds (a);
+            }
             nudgeBar.setBounds (row ("D\xc3\x89" "CALAGE HORS GRILLE", 22));
             pitchBar.setBounds (row ("PITCH", 22));
             varBar.setBounds (row ("VARIANTE", 22));
@@ -660,7 +668,7 @@ namespace tui
         std::function<void()> onEdited;
     private:
         Ctx& ctx;
-        ValueBar velBar, probBar, nudgeBar, pitchBar, varBar;
+        ValueBar velBar, probBar, condBar, nudgeBar, pitchBar, varBar;
         juce::OwnedArray<Pill> subBtns, durBtns, chokeBtns;
         Pill flamBtn, revBtn, lockBtn, clearBtn;
         juce::Rectangle<int> titleArea;
@@ -671,15 +679,20 @@ namespace tui
     class LanePanel : public juce::Component
     {
     public:
-        std::function<void()> onOpenEditor, onLockEnded;
+        std::function<void()> onOpenEditor, onLockEnded, onAltLock;
 
         LanePanel (Ctx& c) : wave (c), ctx (c), dyn (c), inspector (c),
             chokeBtn (c, "CHOKE", true), revBtn (c, "REVERSE", true), gateBtn (c, "GATE MIDI", true), muteBtn (c, "MUTE", true), stepLenBtn (c, juce::String::fromUTF8 ("DUR\xc3\x89" "E = PAS"), true),
             loadBtn (c, "CHARGER..."), bigBtn (c, juce::String::fromUTF8 ("\xe2\xa4\xa2 AGRANDIR")),
             granOn (c, "GRANULAIRE ON", true), freezeBtn (c, "FREEZE", true),
             sliceGo (c, juce::String::fromUTF8 ("R\xc3\x89PARTIR SUR LES PISTES")), slicePat (c, juce::String::fromUTF8 ("R\xc3\x89PARTIR + PATTERN")),
-            lockDone (c, "TERMINER"), lockClear (c, "EFFACER")
+            lockDone (c, "TERMINER"), lockClear (c, "EFFACER"), motionBtn (c, juce::String::fromUTF8 ("\xe2\x97\x8f REC"), true)
         {
+            // MOTION REC : en lecture, les mouvements des potards verrouillables s'écrivent sur les pas joués (comme la TR-8S)
+            addAndMakeVisible (motionBtn); motionBtn.textSize = 10.0f;
+            motionBtn.isOn = [this] { return ctx.proc.motionRec.load(); };
+            motionBtn.onClick = [this] { ctx.proc.motionRec.store (! ctx.proc.motionRec.load()); motionBtn.repaint(); };
+            motionBtn.setTooltip (juce::String::fromUTF8 ("Motion rec : pendant la lecture, tourne volume, pan, d\xc3\xa9" "but, decay, filtre, envois ou grain : le mouvement s'enregistre sur les pas allum\xc3\xa9s (verrous). Clic droit sur la piste pour tout effacer."));
             const char* tabNames[6] = { "SON", "GRAIN", "SLICE", "STRETCH", "DYN", "PAS" };
             for (int k = 0; k < 6; ++k)
             {
@@ -865,7 +878,7 @@ namespace tui
                 g.setColour (t.tx); g.setFont (font (22.0f, true));
                 g.drawText (upperFr (typhon::laneName (lane)), top, juce::Justification::centredLeft);
                 g.setColour (t.sub); g.setFont (mono (12.0f));
-                g.drawText ("NOTE " + typhon::noteName (ctx.proc.noteForLane (lane)), top, juce::Justification::centredRight);
+                g.drawText ("NOTE " + typhon::noteName (ctx.proc.noteForLane (lane)), top.withTrimmedRight (74), juce::Justification::centredRight);
             }
             if (tab == 2)
             {
@@ -883,7 +896,7 @@ namespace tui
                 auto base = ctx.proc.baseSet (lane); auto cur = ctx.proc.laneSet (lane);
                 auto secs = [] (const std::shared_ptr<typhon::SampleSet>& x) { auto* d = x ? x->display (0) : nullptr; return d ? d->length() / d->rate : 0.0; };
                 g.setColour (valueColour (t)); g.setFont (mono (12.0f));
-                g.drawText (ctx.proc.stretchRendering (lane) ? juce::String::fromUTF8 ("Calcul en cours\xe2\x80\xa6")
+                g.drawText (ctx.proc.stretchRendering (lane) ? juce::String::fromUTF8 ("Calcul en cours...")
                                                              : juce::String (secs (base), 2) + juce::String::fromUTF8 (" s \xe2\x86\x92 ") + juce::String (secs (cur), 2) + " s",
                             strInfo, juce::Justification::centredLeft);
                 g.setColour (t.sub); g.setFont (font (12.0f));
@@ -904,6 +917,8 @@ namespace tui
             auto r = getLocalBounds().reduced (16, 14);
             auto top = r.removeFromTop (28);
             lockDone.setVisible (lockStep >= 0); lockClear.setVisible (lockStep >= 0);
+            motionBtn.setVisible (lockStep < 0);
+            motionBtn.setBounds (top.withLeft (top.getRight() - 64).reduced (0, 2));
             if (lockStep >= 0)
             {
                 lockDone.setBounds (top.removeFromRight (84).reduced (0, 2)); top.removeFromRight (6);
@@ -1004,6 +1019,36 @@ namespace tui
                                       [pat, l, s, k] (float v) { pat->setLock (l, s, k, v); });
                 }
                 else m.k->attach (pid (lane, m.id));
+                // Alt + tourner : verrou sur le pas choisi (ou sur tous les pas allumés de la sélection)
+                const int k = m.lock;
+                m.k->altLockReady = [this] { return lockStep < 0 && inspector.stepIdx >= 0 && inspector.lane == lane; };
+                m.k->altLockGet = [this, k] { return ctx.proc.pattern.lock (inspector.lane, inspector.stepIdx, k); };
+                m.k->altLockSet = [this, k] (float v)
+                {
+                    auto& pat = ctx.proc.pattern;
+                    const int l = inspector.lane;
+                    const int a = inspector.isRange() ? inspector.rangeS0 : inspector.stepIdx, b = inspector.isRange() ? inspector.rangeS1 : inspector.stepIdx;
+                    for (int st = a; st <= b; ++st)
+                    {
+                        auto s = pat.get (l, st);
+                        if (! s.on())
+                        {
+                            if (inspector.isRange()) continue;
+                            s = typhon::Step(); s.vel = 100; pat.set (l, st, s);   // un verrou sur un pas éteint l'allume
+                        }
+                        pat.setLock (l, st, k, v);
+                    }
+                    if (onAltLock) onAltLock();
+                };
+                m.k->onAltLockDone = [this] { inspector.refresh(); if (inspector.onEdited) inspector.onEdited(); };
+                m.k->onUserMove = [this, k] (float v)
+                {
+                    if (! ctx.proc.motionRec.load()) return;
+                    const int st = ctx.proc.lanePlayStep (lane);
+                    if (st < 0 || ! ctx.proc.pattern.get (lane, st).on()) return;
+                    ctx.proc.pattern.setLock (lane, st, k, v);
+                    if (onAltLock) onAltLock();
+                };
             }
             if (lockStep >= 0)
             {
@@ -1071,7 +1116,7 @@ namespace tui
         void showRange (int l, int s0, int s1, bool reveal) { if (l != lane) setLane (l); inspector.setRange (l, s0, s1); if (reveal && lockStep < 0) setTab (5); }
     private:
         juce::OwnedArray<Pill> tabs, sliceCount;
-        Pill chokeBtn, revBtn, gateBtn, muteBtn, stepLenBtn, loadBtn, bigBtn, granOn, freezeBtn, sliceGo, slicePat, lockDone, lockClear;
+        Pill chokeBtn, revBtn, gateBtn, muteBtn, stepLenBtn, loadBtn, bigBtn, granOn, freezeBtn, sliceGo, slicePat, lockDone, lockClear, motionBtn;
         juce::ComboBox groupBox, outBox, ftypeBox;
         juce::Slider sliceSens;
         juce::OwnedArray<Knob> sampleKnobs, grainKnobs;
