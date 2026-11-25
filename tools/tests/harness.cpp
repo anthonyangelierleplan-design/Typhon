@@ -166,6 +166,13 @@ int main (int argc, char** argv)
             run (p, h, 0.06, &cut); run (p, h, 0.2);
         }
 
+        // solo : les autres pistes se taisent
+        {
+            setParam (p, typhon::pid (1, "solo"), 1.0f);
+            CHECK (p.laneSilent (0) && ! p.laneSilent (1), "solo : seule la piste en solo joue");
+            setParam (p, typhon::pid (1, "solo"), 0.0f);
+            CHECK (! p.laneSilent (0), "solo retiré : tout rejoue");
+        }
         // pas fusionnés + ratchet : un seul grand pas, coups répartis sur toute sa longueur
         {
             auto saved = p.pattern.get (2, 0);

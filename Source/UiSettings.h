@@ -11,7 +11,7 @@ namespace tui
     public:
         std::function<void()> onChanged, onClose;
 
-        SettingsPage (Ctx& c) : ctx (c), closeBtn (c, "FERMER")
+        SettingsPage (Ctx& c) : ctx (c), closeBtn (c, "FERMER"), keysBtn (c, "RACCOURCIS CLAVIER")
         {
             auto& S = ctx.proc.settings;
             addCard ("QUALIT\xc3\x89 DU MOTEUR",
@@ -37,8 +37,15 @@ namespace tui
             cards.back().status = [this] { return ctx.proc.apcStatus(); };
             addCard ("INTERFACE", {},
                      { { "Th\xc3\xa8me", { "Atelier", "Nuit", "Phosph.", "Bel Air", "808", "Linn" }, &S.theme },
-                       { "Taille de la fen\xc3\xaatre", { "75 %", "100 %", "125 %", "150 %" }, &S.uiScale },
+                       { "Taille de la fen\xc3\xaatre", { "75", "100", "125", "150", "175", "200 %" }, &S.uiScale },
+                       { "Taille du texte", { "Normal", "Grand", "Tr\xc3\xa8s grand" }, &S.textSize },
                        { "Cran magn\xc3\xa9tique au z\xc3\xa9ro", { "Off", "On" }, &S.snapZero } });
+            addCard ("CLAVIER & SOURIS",
+                     juce::String::fromUTF8 ("Un clic sur un pas allum\xc3\xa9 le choisit sans l'\xc3\xa9teindre. Maj + glisser : plusieurs pas. Ctrl+D : dupliquer (Ctrl+Maj+D : pattern suivant). Suppr : effacer."),
+                     { { "Allumer / \xc3\xa9teindre un pas", { "Ctrl + clic", "Alt + clic", "Double-clic" }, &S.toggleMod } });
+            keysCard = (int) cards.size() - 1;
+            addAndMakeVisible (keysBtn); keysBtn.textSize = 12.0f;
+            keysBtn.onClick = [this] { showShortcuts(); };
             startTimerHz (2);
             addAndMakeVisible (closeBtn);
             closeBtn.strong = true;
@@ -97,6 +104,69 @@ namespace tui
                 }
                 c.noteArea = in;
             }
+            if (keysCard >= 0)
+            {
+                auto& c = cards[(size_t) keysCard];
+                keysBtn.setBounds (c.noteArea.removeFromBottom (36).withTrimmedBottom (2));
+            }
+        }
+
+        // Liste des raccourcis : clic sur une touche pour la changer
+        class ShortcutPanel : public juce::Component
+        {
+        public:
+            ShortcutPanel (Ctx& c) : ctx (c)
+            {
+                for (int k = 0; k < TyphonSettings::numShortcuts; ++k)
+                {
+                    auto* b = keys.add (new Pill (c, keyName (ctx.proc.settings.shortcutKeys[k].load())));
+                    b->textSize = 13.0f;
+                    b->onClick = [this, k, b]
+                    {
+                        juce::PopupMenu m;
+                        m.addItem (1, juce::String::fromUTF8 ("Aucune"));
+                        const char* row1 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+                        juce::PopupMenu letters, digits;
+                        for (int i = 0; row1[i]; ++i) letters.addItem (100 + row1[i], juce::String::charToString (row1[i]));
+                        for (char d = '0'; d <= '9'; ++d) digits.addItem (100 + d, juce::String::charToString (d));
+                        m.addSubMenu ("Lettres", letters); m.addSubMenu ("Chiffres", digits);
+                        juce::Component::SafePointer<ShortcutPanel> safe (this);
+                        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (b), [safe, k, b] (int r)
+                        {
+                            if (safe == nullptr || r == 0) return;
+                            const int code = r == 1 ? 0 : r - 100;
+                            auto& S = safe->ctx.proc.settings;
+                            if (code != 0) for (auto& x : S.shortcutKeys) if (x.load() == code) x.store (0);   // une touche = une action
+                            S.shortcutKeys[k].store (code);
+                            S.save();
+                            for (int i = 0; i < safe->keys.size(); ++i) safe->keys[i]->setButtonText (keyName (S.shortcutKeys[i].load()));
+                            juce::ignoreUnused (b);
+                        });
+                    };
+                    addAndMakeVisible (b);
+                }
+                setSize (420, 40 + TyphonSettings::numShortcuts * 30);
+            }
+            void paint (juce::Graphics& g) override
+            {
+                const auto& t = ctx.th();
+                g.fillAll (t.panel);
+                g.setColour (t.sub); g.setFont (font (12.0f, true));
+                g.drawText (juce::String::fromUTF8 ("RACCOURCIS (pas choisi ou s\xc3\xa9lection)"), 14, 8, 380, 22, juce::Justification::centredLeft);
+                g.setColour (t.tx); g.setFont (font (13.0f));
+                for (int k = 0; k < TyphonSettings::numShortcuts; ++k)
+                    g.drawText (juce::String::fromUTF8 (shortcutName (k)), 14, 36 + k * 30, 320, 26, juce::Justification::centredLeft);
+            }
+            void resized() override { for (int k = 0; k < keys.size(); ++k) keys[k]->setBounds (getWidth() - 74, 36 + k * 30, 60, 26); }
+        private:
+            Ctx& ctx;
+            juce::OwnedArray<Pill> keys;
+        };
+
+        void showShortcuts()
+        {
+            auto p = std::make_unique<ShortcutPanel> (ctx);
+            juce::CallOutBox::launchAsynchronously (std::move (p), keysBtn.getScreenBounds(), nullptr);
         }
 
     private:
@@ -134,6 +204,7 @@ namespace tui
         Ctx& ctx;
         juce::OwnedArray<Pill> pills;
         std::vector<Card> cards;
-        Pill closeBtn;
+        Pill closeBtn, keysBtn;
+        int keysCard = -1;
     };
 }

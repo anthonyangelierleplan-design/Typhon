@@ -11,6 +11,23 @@ namespace tui
 {
     using typhon::Theme;
 
+    // majuscules avec accents, quelle que soit la langue du système
+    inline juce::String upperFr (const juce::String& s)
+    {
+        juce::String o;
+        for (auto c : s)
+        {
+            switch (c)
+            {
+                case 0xE9: c = 0xC9; break; case 0xE8: c = 0xC8; break; case 0xEA: c = 0xCA; break; case 0xE0: c = 0xC0; break;
+                case 0xE7: c = 0xC7; break; case 0xF4: c = 0xD4; break; case 0xEE: c = 0xCE; break; case 0xFB: c = 0xDB; break;
+                default: c = juce::CharacterFunctions::toUpperCase (c); break;
+            }
+            o += juce::String::charToString (c);
+        }
+        return o;
+    }
+
     // Polices embarquées : Saira Semi Condensed (sérigraphie), Share Tech Mono (écran), Michroma (logo, titres)
     struct Typefaces
     {
@@ -28,12 +45,16 @@ namespace tui
     {
         return tf != nullptr ? juce::Font (juce::FontOptions (tf).withHeight (size)) : fallback;
     }
+    // taille du texte choisie dans les Paramètres (indépendante de la taille de la fenêtre)
+    inline float& textScale() { static float s = 1.12f; return s; }
     inline juce::Font font (float size, bool bold = false)
     {
+        size *= textScale();
         return withFace (bold ? faces().bold : faces().medium, size * 1.24f, juce::Font (juce::FontOptions (size, bold ? juce::Font::bold : juce::Font::plain)));
     }
     inline juce::Font mono (float size, bool bold = false)
     {
+        size *= std::sqrt (textScale());
         juce::ignoreUnused (bold);
         return withFace (faces().lcd, size * 1.1f, juce::Font (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), size, juce::Font::plain)));
     }
@@ -235,8 +256,8 @@ namespace tui
                 g.setColour (over ? t.sub : t.knobEdge); g.drawRoundedRectangle (r, rad, 1.0f);
             }
             g.setColour (on ? t.bg : (isEnabled() ? t.tx : t.sub));
-            g.setFont (font (textSize, true));
-            g.drawFittedText (getButtonText(), getLocalBounds().reduced (6, 0), juce::Justification::centred, 1);
+            g.setFont (font (textSize * 1.1f, true));
+            g.drawFittedText (getButtonText(), getLocalBounds().reduced (4, 0), juce::Justification::centred, 1, 0.75f);
             if (! isEnabled()) g.endTransparencyLayer();
         }
     private:
@@ -310,7 +331,7 @@ namespace tui
         std::function<juce::String (float)> formatter;
         bool onBottom = false;   // posé sur la barre du bas (couleurs adaptées)
         bool hardware = false;   // potard de façade (sérigraphie, capuchon)
-        void setHardware() { hardware = true; onBottom = true; slider.getProperties().set ("hw", true); label = label.toUpperCase(); repaint(); }
+        void setHardware() { hardware = true; onBottom = true; slider.getProperties().set ("hw", true); label = upperFr (label); repaint(); }
 
         void resized() override
         {
@@ -440,6 +461,21 @@ namespace tui
             g.setColour (juce::Colours::black.withAlpha (0.06f + rnd.nextFloat() * 0.12f));
             g.drawLine (x, r.getY(), x + rnd.nextFloat() * 2.0f - 1.0f, r.getBottom(), 0.8f);
         }
+    }
+
+    // Actions des raccourcis clavier (même ordre que TyphonSettings::shortcutKeys)
+    inline const char* shortcutName (int k)
+    {
+        static const char* n[TyphonSettings::numShortcuts] = {
+            "Accent (fort / normal)", "Note fant\xc3\xb4me", "Ratchet suivant (1 \xe2\x86\x92 4)", "Flam", "Division en deux", "Reverse",
+            "Probabilit\xc3\xa9 (100 / 75 / 50 / 25)", "Pitch \xe2\x88\x92 1", "Pitch + 1", "D\xc3\xa9" "calage \xe2\x88\x92 5 %", "D\xc3\xa9" "calage + 5 %",
+            "Dur\xc3\xa9" "e (piste / pas / libre)", "Choke du pas (piste / coupe / laisse)", "Ouvrir l'onglet PAS" };
+        return n[juce::jlimit (0, TyphonSettings::numShortcuts - 1, k)];
+    }
+    inline juce::String keyName (int code)
+    {
+        if (code <= 0) return juce::String::fromUTF8 ("\xe2\x80\x94");
+        return juce::String::charToString ((juce::juce_wchar) code).toUpperCase();
     }
 
     // Formatages lisibles

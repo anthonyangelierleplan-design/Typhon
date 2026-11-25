@@ -24,7 +24,12 @@ struct TyphonSettings
     std::atomic<int> uiScale { 1 };        // 0 75 %, 1 100 %, 2 125 %, 3 150 %
     std::atomic<int> snapZero { 1 };
     std::atomic<int> captureRate { 0 };    // 0 48 kHz / 24 bits, 1 96 kHz / 32 bits flottant
-    std::atomic<int> apcOn { 0 };          // Akai APC64 en mode Custom sur le canal 16
+    std::atomic<int> apcOn { 0 };          // Akai APC64 piloté en direct
+    std::atomic<int> textSize { 1 };       // 0 normal, 1 grand, 2 très grand
+    std::atomic<int> toggleMod { 0 };      // allumer / éteindre un pas : 0 Ctrl+clic, 1 Alt+clic, 2 double-clic seulement
+    static constexpr int numShortcuts = 14;
+    std::atomic<int> shortcutKeys[numShortcuts];   // touche (code) par action, 0 = aucune
+    TyphonSettings();
     juce::String libraryPath() const { const juce::ScopedLock sl (lock); return libPath; }
     void setLibraryPath (const juce::String& p) { { const juce::ScopedLock sl (lock); libPath = p; } save(); }
     juce::CriticalSection lock;
@@ -260,6 +265,11 @@ private:
     int stepLoopSize = 0; int64_t stepLoopStart = 0;
     std::atomic<float>* laneLenP[typhon::numLanes] {};
     std::atomic<float>* pFillSrc = nullptr;
+    std::atomic<float>* soloP[typhon::numLanes] {};
+public:
+    bool anySolo() const { for (auto* p : soloP) if (p != nullptr && p->load() > 0.5f) return true; return false; }
+    bool laneSilent (int i) const { return lp[i].mute->load() > 0.5f || (anySolo() && soloP[i]->load() < 0.5f); }
+private:
     double uiRollFree = 0.0; bool uiRollRunning = false;
 
     std::unique_ptr<CaptureEngine> captureEngine;

@@ -235,17 +235,26 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
         chokeAllAtt = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (p.apvts, "choke_all", chokeAllBtn);
         settingsPage.onClose = [this] { setPage (0); };
         settingsPage.onChanged = [this] { applySettings(); };
+        { static const float ts[3] = { 1.0f, 1.12f, 1.25f }; textScale() = ts[juce::jlimit (0, 2, ctx.proc.settings.textSize.load())]; SeqGrid::toggleModifierRef() = ctx.proc.settings.toggleMod.load(); }
 
-        grid.onSelectLane = [this] (int l) { lane.setLane (l); panelTab.text = juce::String::fromUTF8 ("\xe2\x97\x82  ") + typhon::laneName (l).toUpperCase() + juce::String::fromUTF8 ("  \xc2\xb7  PISTE"); panelTab.repaint(); if (lane.getLockStep() < 0) { grid.lockLane = -1; grid.lockStep = -1; } if (editorOpen) editor.setLane (l); };
+        grid.onSelectLane = [this] (int l) { lane.setLane (l); panelTab.text = juce::String::fromUTF8 ("\xe2\x97\x82  ") + upperFr (typhon::laneName (l)) + juce::String::fromUTF8 ("  \xc2\xb7  PISTE"); panelTab.repaint(); if (lane.getLockStep() < 0) { grid.lockLane = -1; grid.lockStep = -1; } if (editorOpen) editor.setLane (l); };
         grid.selected = 1;
         grid.onFocusStep = [this] (int l, int st, bool reveal)
         {
             if (reveal)
             {
                 if (ctx.proc.settings.panelOpen.load() == 0) setPanelOpen (true);
-                lane.showStep (l, st);
+                int sl, s0, s1;
+                if (grid.singleLaneSelection (sl, s0, s1) && sl == l && st >= s0 && st <= s1 && s1 > s0) lane.showRange (l, s0, s1, true);
+                else lane.showStep (l, st);
             }
             else if (lane.lane == l) lane.inspector.setStep (l, st);
+        };
+        grid.onSelectionChanged = [this]
+        {
+            int l, s0, s1;
+            if (grid.singleLaneSelection (l, s0, s1) && s1 > s0) lane.showRange (l, s0, s1, false);
+            else if (lane.inspector.isRange()) lane.inspector.setStep (lane.lane, -1);
         };
         lane.inspector.onLock = [this] (int l, int st) { if (grid.onLockStep) grid.onLockStep (l, st); };
         lane.inspector.onEdited = [this] { grid.repaint(); };
@@ -303,16 +312,73 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
         if (page == 0 && ! editorOpen)
         {
             if (c == juce::KeyPress::escapeKey) { grid.clearSelectionMark(); return true; }
-            if ((c == juce::KeyPress::deleteKey || c == juce::KeyPress::backspaceKey) && grid.hasSelection()) { grid.clearSelectionSteps(); ctx.proc.undoCommit(); return true; }
-            if (m.isCommandDown() && (c == 'D' || c == 'd')) { grid.duplicateSelection(); ctx.proc.undoCommit(); return true; }
-            if (m.isCommandDown() && (c == 'C' || c == 'c')) { grid.copySelection(); return true; }
+            if (c == juce::KeyPress::deleteKey || c == juce::KeyPress::backspaceKey)
+            {
+                if (grid.hasSelection()) grid.clearSelectionSteps();
+                else grid.clearFocusedStep();
+                lane.inspector.refresh(); ctx.proc.undoCommit(); return true;
+            }
+            if (m.isCommandDown() && (c == 'D' || c == 'd'))
+            {
+                if (m.isShiftDown())
+                {
+                    const int cur = ctx.proc.currentPattern();
+                    if (cur < TyphonProcessor::fillPatternIndex - 1) { ctx.proc.copyPattern (cur, cur + 1); ctx.proc.selectPattern (cur + 1); }
+                }
+                else if (grid.hasSelection()) grid.duplicateSelection();
+                else grid.duplicateFocusedStep();
+                ctx.proc.undoCommit(); grid.repaint(); return true;
+            }
+            if (m.isCommandDown() && (c == 'C' || c == 'c')) { grid.copySelectionOrFocus(); return true; }
             if (m.isCommandDown() && (c == 'V' || c == 'v')) { grid.pasteAtSelection(); grid.repaint(); ctx.proc.undoCommit(); return true; }
+            if (! m.isCommandDown() && ! m.isAltDown() && handleShortcut (c)) return true;
         }
         if (! m.isCommandDown()) return false;
         if ((c == 'Z' || c == 'z') && ! m.isShiftDown()) { doUndo (false); return true; }
         if (c == 'Y' || c == 'y' || ((c == 'Z' || c == 'z') && m.isShiftDown())) { doUndo (true); return true; }
         return false;
     }
+    bool handleShortcut (int code)
+    {
+        if (code >= 'a' && code <= 'z') code -= 32;
+        int action = -1;
+        for (int k = 0; k < TyphonSettings::numShortcuts; ++k) if (ctx.proc.settings.shortcutKeys[k].load() == code) { action = k; break; }
+        if (action < 0) return false;
+        if (action == 13) { if (grid.focusLane >= 0) grid.onFocusStep (grid.focusLane, grid.focusStep, true); return true; }
+        auto targets = grid.targetSteps();
+        if (targets.empty()) return false;
+        auto& pat = ctx.proc.pattern;
+        // les cycles suivent le premier pas visé, pour que tous les pas sélectionnés finissent pareils
+        const auto ref = pat.get (targets[0].first, targets[0].second);
+        for (auto [l, st] : targets)
+        {
+            auto s = pat.get (l, st);
+            if (! s.on()) continue;
+            switch (action)
+            {
+                case 0: s.vel = ref.vel >= 115 ? 90 : 120; break;
+                case 1: s.vel = 40; break;
+                case 2: s.ratchet = ref.split ? 1 : (ref.ratchet % 4) + 1; s.split = false; break;
+                case 3: s.flam = ! ref.flam; break;
+                case 4: s.split = ! ref.split; s.ratchet = 1; break;
+                case 5: s.rev = ! ref.rev; break;
+                case 6: s.prob = ref.prob > 75 ? 75 : (ref.prob > 50 ? 50 : (ref.prob > 25 ? 25 : 100)); break;
+                case 7: s.pitch = std::max (-12, s.pitch - 1); break;
+                case 8: s.pitch = std::min (12, s.pitch + 1); break;
+                case 9: s.nudge = std::max (-50, s.nudge - 5); break;
+                case 10: s.nudge = std::min (50, s.nudge + 5); break;
+                case 11: s.dur = (ref.dur + 1) % 3; break;
+                case 12: s.choke = (ref.choke + 1) % 3; break;
+                default: break;
+            }
+            pat.set (l, st, s);
+        }
+        lane.inspector.refresh();
+        grid.repaint();
+        ctx.proc.undoCommit();
+        return true;
+    }
+
     // chaque action à la souris (et les menus qui suivent) devient une étape d'annulation
     void mouseDown (const juce::MouseEvent&) override
     {
@@ -358,6 +424,9 @@ struct TyphonEditor::Ui : public juce::Component, private juce::Timer
     void applySettings()
     {
         bgKey = -1;
+        static const float ts[3] = { 1.0f, 1.12f, 1.25f };
+        textScale() = ts[juce::jlimit (0, 2, ctx.proc.settings.textSize.load())];
+        SeqGrid::toggleModifierRef() = ctx.proc.settings.toggleMod.load();
         sendLookAndFeelChange();
         const int sc = ctx.proc.settings.uiScale.load();
         if (sc != lastScale && onScaleChanged) { lastScale = sc; onScaleChanged(); }
@@ -609,7 +678,7 @@ TyphonEditor::TyphonEditor (TyphonProcessor& p) : AudioProcessorEditor (&p), pro
     addAndMakeVisible (*ui);
     setResizable (true, true);
     getConstrainer()->setFixedAspectRatio ((double) baseW / baseH);
-    setResizeLimits (baseW / 2, baseH / 2, baseW * 2, baseH * 2);
+    setResizeLimits (baseW / 2, baseH / 2, baseW * 5 / 2, baseH * 5 / 2);
     applyScaleSetting();
 }
 
@@ -617,8 +686,8 @@ TyphonEditor::~TyphonEditor() = default;
 
 void TyphonEditor::applyScaleSetting()
 {
-    const float scales[4] = { 0.75f, 1.0f, 1.25f, 1.5f };
-    const float s = scales[juce::jlimit (0, 3, proc.settings.uiScale.load())];
+    const float scales[6] = { 0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f };
+    const float s = scales[juce::jlimit (0, 5, proc.settings.uiScale.load())];
     setSize ((int) (baseW * s), (int) (baseH * s));
 }
 

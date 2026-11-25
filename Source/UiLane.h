@@ -513,7 +513,13 @@ namespace tui
             revBtn.onClick = [this] { edit ([] (typhon::Step& s) { s.rev = ! s.rev; }); };
             for (auto* b : { &flamBtn, &revBtn, &lockBtn, &clearBtn }) { addAndMakeVisible (*b); b->textSize = 11.0f; }
             lockBtn.onClick = [this] { if (stepIdx >= 0 && onLock) onLock (lane, stepIdx); };
-            clearBtn.onClick = [this] { if (stepIdx < 0) return; ctx.proc.pattern.set (lane, stepIdx, typhon::Step()); ctx.proc.pattern.clearLocks (lane, stepIdx); refresh(); };
+            clearBtn.onClick = [this]
+            {
+                if (stepIdx < 0) return;
+                const int a = isRange() ? rangeS0 : stepIdx, b = isRange() ? rangeS1 : stepIdx;
+                for (int st = a; st <= b; ++st) { ctx.proc.pattern.set (lane, st, typhon::Step()); ctx.proc.pattern.clearLocks (lane, st); }
+                refresh(); if (onEdited) onEdited();
+            };
 
             auto bar = [this] (ValueBar& b, int mn, int mx, int def, std::function<int (const typhon::Step&)> g, std::function<void (typhon::Step&, int)> st, std::function<juce::String (int)> f)
             {
@@ -537,7 +543,17 @@ namespace tui
         std::function<void (int, int)> onLock;
         int lane = 0, stepIdx = -1;
 
-        void setStep (int l, int st) { lane = l; stepIdx = st; refresh(); }
+        void setStep (int l, int st) { lane = l; stepIdx = st; rangeS0 = rangeS1 = -1; refresh(); }
+        // plusieurs pas d'une même piste (Maj + glisser) : les réglages s'appliquent à tous les pas allumés
+        void setRange (int l, int s0, int s1)
+        {
+            lane = l; rangeS0 = s0; rangeS1 = s1; stepIdx = -1;
+            for (int st = s0; st <= s1; ++st) if (ctx.proc.pattern.get (l, st).on()) { stepIdx = st; break; }
+            if (stepIdx < 0) stepIdx = s0;
+            refresh();
+        }
+        bool isRange() const { return rangeS0 >= 0 && rangeS1 > rangeS0; }
+        int rangeS0 = -1, rangeS1 = -1;
         void refresh()
         {
             varBar.maxV = std::max (1, std::min (15, ctx.proc.laneVariants (lane)));
@@ -566,6 +582,12 @@ namespace tui
             juce::String head = "PAS " + juce::String (stepIdx + 1);
             if (s.len > 1) head << juce::String::fromUTF8 (" \xe2\x86\x92 ") << juce::String (stepIdx + s.len);
             if (! s.on()) head << juce::String::fromUTF8 (" \xc2\xb7 \xc3\xa9teint");
+            if (isRange())
+            {
+                int n = 0; for (int st = rangeS0; st <= rangeS1; ++st) if (ctx.proc.pattern.get (lane, st).on()) ++n;
+                head = "PAS " + juce::String (rangeS0 + 1) + juce::String::fromUTF8 (" \xc3\xa0 ") + juce::String (rangeS1 + 1) + juce::String::fromUTF8 (" \xc2\xb7 ") + juce::String (n) + " ALLUM\xc3\x89S";
+                head = juce::String::fromUTF8 (head.toRawUTF8());
+            }
             g.drawText (head, titleArea, juce::Justification::centredLeft);
             g.setColour (t.sub); g.setFont (mono (11.0f));
             const auto h = typhon::hitsOf (s);
@@ -614,10 +636,23 @@ namespace tui
         void edit (std::function<void (typhon::Step&)> f)
         {
             if (stepIdx < 0) return;
-            auto s = ctx.proc.pattern.get (lane, stepIdx);
-            if (! s.on()) { s = typhon::Step(); s.vel = 100; }
-            f (s);
-            ctx.proc.pattern.set (lane, stepIdx, s);
+            auto& pat = ctx.proc.pattern;
+            if (isRange())
+            {
+                for (int st = rangeS0; st <= rangeS1; ++st)
+                {
+                    auto s = pat.get (lane, st);
+                    if (! s.on()) continue;
+                    f (s); pat.set (lane, st, s);
+                }
+            }
+            else
+            {
+                auto s = pat.get (lane, stepIdx);
+                if (! s.on()) { s = typhon::Step(); s.vel = 100; }
+                f (s);
+                pat.set (lane, stepIdx, s);
+            }
             refresh();
             if (onEdited) onEdited();
         }
@@ -823,12 +858,12 @@ namespace tui
             {
                 g.setColour (t.lcdBg); g.fillRoundedRectangle (top.toFloat().expanded (6, 3), 6.0f);
                 g.setColour (t.lcdTx); g.setFont (mono (13.0f, true));
-                g.drawText (juce::String::fromUTF8 ("VERROU \xc2\xb7 ") + typhon::laneName (lane).toUpperCase() + " PAS " + juce::String (lockStep + 1), top, juce::Justification::centredLeft);
+                g.drawText (juce::String::fromUTF8 ("VERROU \xc2\xb7 ") + upperFr (typhon::laneName (lane)) + " PAS " + juce::String (lockStep + 1), top, juce::Justification::centredLeft);
             }
             else
             {
                 g.setColour (t.tx); g.setFont (font (22.0f, true));
-                g.drawText (typhon::laneName (lane).toUpperCase(), top, juce::Justification::centredLeft);
+                g.drawText (upperFr (typhon::laneName (lane)), top, juce::Justification::centredLeft);
                 g.setColour (t.sub); g.setFont (mono (12.0f));
                 g.drawText ("NOTE " + typhon::noteName (ctx.proc.noteForLane (lane)), top, juce::Justification::centredRight);
             }
@@ -1033,6 +1068,7 @@ namespace tui
     public:
         StepInspector inspector;
         void showStep (int l, int st) { if (l != lane) setLane (l); inspector.setStep (l, st); if (lockStep < 0) setTab (5); }
+        void showRange (int l, int s0, int s1, bool reveal) { if (l != lane) setLane (l); inspector.setRange (l, s0, s1); if (reveal && lockStep < 0) setTab (5); }
     private:
         juce::OwnedArray<Pill> tabs, sliceCount;
         Pill chokeBtn, revBtn, gateBtn, muteBtn, stepLenBtn, loadBtn, bigBtn, granOn, freezeBtn, sliceGo, slicePat, lockDone, lockClear;
@@ -1100,7 +1136,7 @@ namespace tui
             const auto& t = ctx.th();
             g.setColour (t.panel); g.fillRoundedRectangle (getLocalBounds().toFloat(), 10.0f);
             g.setColour (t.tx); g.setFont (font (22.0f, true));
-            g.drawText (juce::String::fromUTF8 ("\xc3\x89" "DITEUR \xc2\xb7 ") + typhon::laneName (lane).toUpperCase(), titleArea, juce::Justification::centredLeft);
+            g.drawText (juce::String::fromUTF8 ("\xc3\x89" "DITEUR \xc2\xb7 ") + upperFr (typhon::laneName (lane)), titleArea, juce::Justification::centredLeft);
             g.setColour (t.sub); g.setFont (font (12.0f));
             g.drawText (juce::String::fromUTF8 ("Molette : zoom \xc2\xb7 Maj + molette ou glisser : d\xc3\xa9placer \xc2\xb7 Saisis les drapeaux orange pour d\xc3\xa9placer le d\xc3\xa9" "but et la fin \xc2\xb7 Clic droit : options"),
                         hintArea, juce::Justification::centredLeft);

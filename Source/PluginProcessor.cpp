@@ -14,6 +14,14 @@ juce::File TyphonSettings::file()
         .getChildFile ("Foudre Audio").getChildFile ("Typhon.settings");
 }
 
+TyphonSettings::TyphonSettings()
+{
+    // raccourcis par défaut (voir tui::shortcutNames) : A accent, G fantôme, R ratchet, F flam, X division, V reverse,
+    // P probabilité, J/K pitch -/+, N/M décalage -/+, D durée, C choke, I ouvrir l'onglet PAS
+    const char def[numShortcuts] = { 'A', 'G', 'R', 'F', 'X', 'V', 'P', 'J', 'K', 'N', 'M', 'D', 'C', 'I' };
+    for (int k = 0; k < numShortcuts; ++k) shortcutKeys[k].store ((int) def[k]);
+}
+
 void TyphonSettings::load()
 {
     auto xml = juce::XmlDocument::parse (file());
@@ -27,7 +35,10 @@ void TyphonSettings::load()
     get ("midiChannel", midiChannel, 0, 16);
     get ("theme", theme, 0, 5);
     get ("panelOpen", panelOpen, 0, 1);
-    get ("uiScale", uiScale, 0, 3);
+    get ("uiScale", uiScale, 0, 5);
+    get ("textSize", textSize, 0, 2);
+    get ("toggleMod", toggleMod, 0, 2);
+    for (int k = 0; k < numShortcuts; ++k) get (("sk" + juce::String (k)).toRawUTF8(), shortcutKeys[k], 0, 0x10FFFF);
     get ("snapZero", snapZero, 0, 1);
     get ("captureRate", captureRate, 0, 1);
     get ("apcOn", apcOn, 0, 1);
@@ -46,6 +57,9 @@ void TyphonSettings::save() const
     x.setAttribute ("theme", theme.load());
     x.setAttribute ("panelOpen", panelOpen.load());
     x.setAttribute ("uiScale", uiScale.load());
+    x.setAttribute ("textSize", textSize.load());
+    x.setAttribute ("toggleMod", toggleMod.load());
+    for (int k = 0; k < numShortcuts; ++k) x.setAttribute ("sk" + juce::String (k), shortcutKeys[k].load());
     x.setAttribute ("snapZero", snapZero.load());
     x.setAttribute ("captureRate", captureRate.load());
     x.setAttribute ("apcOn", apcOn.load());
@@ -124,6 +138,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout TyphonProcessor::createLayou
         grp->addChild (f (pid (i, "drel"), n + juce::String::fromUTF8 ("Dynamique rel\xc3\xa2" "che"), 5.0f, 1000.0f, 80.0f, 120.0f));
         grp->addChild (f (pid (i, "dmix"), n + "Dynamique mix", 0.0f, 1.0f, 1.0f));
         grp->addChild (std::make_unique<AudioParameterBool> (ParameterID { pid (i, "mute"), 1 }, n + "Mute", false));
+        grp->addChild (std::make_unique<AudioParameterBool> (ParameterID { pid (i, "solo"), 1 }, n + "Solo", false));
         grp->addChild (std::make_unique<AudioParameterBool> (ParameterID { pid (i, "gate"), 1 }, n + "Gate MIDI", false));
         grp->addChild (f (pid (i, "fcut"), n + "Filtre", 20.0f, 20000.0f, 20000.0f, 1000.0f));
         grp->addChild (f (pid (i, "fres"), n + juce::String::fromUTF8 ("R\xc3\xa9sonance"), 0.5f, 10.0f, 0.707f, 2.0f));
@@ -230,6 +245,7 @@ TyphonProcessor::TyphonProcessor()
     pSeqLen = G ("seq_len"); pFillLen = G ("fill_len"); pFillGrid = G ("fill_grid"); pFillOthers = G ("fill_others"); pFillCrash = G ("fill_crash");
     for (int i = 0; i < numLanes; ++i) pFillLane[i] = apvts.getRawParameterValue ("fill_l" + juce::String (i));
     for (int i = 0; i < numLanes; ++i) laneLenP[i] = apvts.getRawParameterValue (pid (i, "len"));
+    for (int i = 0; i < numLanes; ++i) soloP[i] = apvts.getRawParameterValue (pid (i, "solo"));
     pFillSrc = G ("fill_src");
     pFxaSize = G ("fxa_size"); pFxaDamp = G ("fxa_damp"); pFxaWidth = G ("fxa_width"); pFxaRet = G ("fxa_ret");
     pFxbTime = G ("fxb_time"); pFxbFb = G ("fxb_fb"); pFxbTone = G ("fxb_tone"); pFxbPp = G ("fxb_pp"); pFxbRet = G ("fxb_ret");
@@ -564,7 +580,7 @@ void TyphonProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     // volume / pan lissés : on part de la valeur réelle (sinon le 1er bloc sortirait à plein volume)
     for (int i = 0; i < numLanes; ++i)
     {
-        const float vol = lp[i].mute->load() > 0.5f ? 0.0f : dbToGain (lp[i].vol->load());
+        const float vol = laneSilent (i) ? 0.0f : dbToGain (lp[i].vol->load());
         const float pan = lp[i].pan->load();
         lanes[i].panL = vol * std::sqrt (0.5f * (1.0f - pan)) * 1.41421356f;
         lanes[i].panR = vol * std::sqrt (0.5f * (1.0f + pan)) * 1.41421356f;
@@ -930,7 +946,7 @@ void TyphonProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
             for (auto& v : lanes[ev.lane].voices) v.choke (f);
             for (auto& c : lanes[ev.lane].clouds) c.choke (f);
         }
-        else if (lp[ev.lane].mute->load() < 0.5f)
+        else if (! laneSilent (ev.lane))
         {
             trigger (ev.lane, ev.vel, ev.choke, ev.gate, ev.step, ev.pitch, ev.rev);
             if (ev.lane == duckSrc && nDuck < 128) duckOffsets[nDuck++] = ev.offset;
@@ -975,7 +991,7 @@ void TyphonProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         L.sp.process (l, r, n, spAmt, spBits, spRate, spFilt, spMode);
 
         const bool ducked = duckAmt > 0.0001f && i != duckSrc && P.duck->load() > 0.5f;
-        const float vol = P.mute->load() > 0.5f ? 0.0f : dbToGain (P.vol->load());
+        const float vol = laneSilent (i) ? 0.0f : dbToGain (P.vol->load());
         const float pan = P.pan->load();
         const float tl = vol * std::sqrt (0.5f * (1.0f - pan)) * 1.41421356f;
         const float tr = vol * std::sqrt (0.5f * (1.0f + pan)) * 1.41421356f;
