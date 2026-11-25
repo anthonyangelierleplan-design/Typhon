@@ -18,6 +18,13 @@ namespace typhon
         juce::String machine, category, name;
         int role = -1;
         std::vector<std::vector<juce::File>> variants;   // variante -> fichiers round robin
+        // accord (rempli par TyphonProcessor::tuneSound) : variantes rangées du grave à l'aigu
+        bool tuned = false;
+        int zeroVar = 0;                                 // la variante « pitch zéro »
+        float tune = 0.0f;                               // accord fin en demi-tons
+        std::vector<float> hz;                           // hauteur de chaque variante
+        std::vector<bool> pitched;
+        juce::String key() const { return machine + "|" + category + "|" + name; }
         int totalFiles() const { int n = 0; for (auto& v : variants) n += (int) v.size(); return n; }
     };
 
@@ -178,7 +185,9 @@ namespace typhon
     {
         juce::StringArray vars;
         for (auto& v : s.variants) { juce::StringArray f; for (auto& x : v) f.add (x.getFullPathName()); vars.add (f.joinIntoString ("|")); }
-        return "lib:" + s.machine + " - " + s.name + "\n" + vars.joinIntoString ("\n");
+        // 1re ligne : « machine - nom », puis (tabulations) machine, catégorie, nom, rôle — pour retrouver l'accord
+        return "lib:" + s.machine + " - " + s.name + "\t" + s.machine + "\t" + s.category + "\t" + s.name + "\t" + juce::String (s.role)
+               + "\n" + vars.joinIntoString ("\n");
     }
     inline bool decodeSound (const juce::String& txt, LibSound& s)
     {
@@ -186,6 +195,11 @@ namespace typhon
         juce::StringArray lines; lines.addLines (txt.substring (4));
         if (lines.size() < 2) return false;
         s.name = lines[0];
+        if (lines[0].contains ("\t"))
+        {
+            juce::StringArray h; h.addTokens (lines[0], "\t", "");
+            if (h.size() >= 5) { s.machine = h[1]; s.category = h[2]; s.name = h[3]; s.role = h[4].getIntValue(); }
+        }
         for (int i = 1; i < lines.size(); ++i)
         {
             juce::StringArray f; f.addTokens (lines[i], "|", "");

@@ -119,10 +119,13 @@ public:
 
     // --- bibliothèque de machines ------------------------------------------
     std::vector<typhon::LibMachine> library;     // dernier scan (fil principal)
+    void tuneSound (typhon::LibSound& s);              // range les variantes du grave à l'aigu, choisit le pitch zéro
+    void setSoundAccord (typhon::LibSound& s, int zeroVar, float tune);
+    int autoTuneMachine (typhon::LibMachine& m);
     void rescanLibrary();
     bool loadLibrarySound (int lane, const typhon::LibSound& s);
     void loadMachineKit (const typhon::LibMachine& m);
-    void previewSound (const typhon::LibSound& s, int variant);
+    void previewSound (const typhon::LibSound& s, int variant, float tune = 0.0f);
     int laneVariants (int lane) const { auto s = laneSet (lane); return s ? std::max (1, s->numVariants()) : 1; }
 
     CaptureEngine& capture() { return *captureEngine; }
@@ -255,6 +258,13 @@ private:
     std::atomic<bool> cutRequest { false };
     typhon::apc::Surface::Hit rollHits[64];
     void applyApcActions();
+
+    struct Accord { juce::String zeroFile; float tune = 0.0f; };
+    std::map<juce::String, Accord> accords;
+    std::map<juce::String, std::pair<float, bool>> pitchCache;
+    bool accordsLoaded = false;
+    void loadAccords();
+    void saveAccords();
 
     typhon::Pattern bank[numPatterns];
     std::atomic<int> curPattern { 0 }, pendingPattern { -1 };

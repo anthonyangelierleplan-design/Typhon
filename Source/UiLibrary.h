@@ -14,7 +14,8 @@ namespace tui
         std::function<void (int)> onLaneLoaded;   // pour rafraîchir le séquenceur
 
         LibraryPage (Ctx& c) : ctx (c), machineModel (*this, true), soundModel (*this, false),
-            chooseBtn (c, "CHOISIR LE DOSSIER"), rescanBtn (c, "RESCANNER"), kitBtn (c, "CHARGER LE KIT COMPLET"), saveKitBtn (c, "ENREGISTRER MON KIT"), myKitsBtn (c, "MES KITS")
+            chooseBtn (c, "CHOISIR LE DOSSIER"), rescanBtn (c, "RESCANNER"), kitBtn (c, "CHARGER LE KIT COMPLET"), saveKitBtn (c, "ENREGISTRER MON KIT"), myKitsBtn (c, "MES KITS"),
+              accMinus (c, juce::String::fromUTF8 ("\xe2\x88\x92")), accPlus (c, "+"), zeroBtn (c, juce::String::fromUTF8 ("Z\xc3\x89RO ICI")), autoBtn (c, "AUTO")
         {
             for (auto* lb : { &machineList, &soundList })
             {
@@ -27,6 +28,25 @@ namespace tui
             soundList.setModel (&soundModel);
             for (auto* b : { &chooseBtn, &rescanBtn, &kitBtn, &saveKitBtn, &myKitsBtn }) { addAndMakeVisible (*b); b->textSize = 12.0f; }
             saveKitBtn.onClick = [this] { askKitName(); };
+            for (auto* b : { &accMinus, &accPlus, &zeroBtn, &autoBtn }) { addAndMakeVisible (*b); b->textSize = 12.0f; }
+            accMinus.onClick = [this] { nudgeAccord (-0.5f); };
+            accPlus.onClick = [this] { nudgeAccord (0.5f); };
+            zeroBtn.onClick = [this] { if (auto* s = soundMut()) { ctx.proc.setSoundAccord (*s, selVariant, s->tune); status = juce::String::fromUTF8 ("Pitch z\xc3\xa9ro : variante ") + juce::String (selVariant + 1); repaint(); } };
+            autoBtn.onClick = [this]
+            {
+                if (auto* m = machineMut())
+                {
+                    const int n = ctx.proc.autoTuneMachine (*m);
+                    status = n > 0 ? juce::String::fromUTF8 ("Accord auto : ") + juce::String (n) + juce::String::fromUTF8 (" son(s) redescendu(s) vers leur hauteur habituelle (kick ~52 Hz, snare ~185 Hz). Ajuste \xc3\xa0 l'oreille avec \xe2\x88\x92 / +.")
+                                   : juce::String::fromUTF8 ("Accord auto : rien \xc3\xa0 corriger sur cette machine.");
+                    if (auto* s = soundMut()) selVariant = s->zeroVar;
+                    repaint();
+                }
+            };
+            accMinus.setTooltip (juce::String::fromUTF8 ("Accord du son : \xe2\x88\x92 \xc2\xbd demi-ton (gard\xc3\xa9 pour tous tes projets)"));
+            accPlus.setTooltip (juce::String::fromUTF8 ("Accord du son : + \xc2\xbd demi-ton"));
+            zeroBtn.setTooltip (juce::String::fromUTF8 ("La variante choisie devient le pitch z\xc3\xa9ro de ce son"));
+            autoBtn.setTooltip (juce::String::fromUTF8 ("Accorde toute la machine : kicks et snares trop aigus ramen\xc3\xa9s vers leur hauteur habituelle"));
             myKitsBtn.onClick = [this] { showMyKits(); };
             kitBtn.strong = true; kitBtn.textSize = 14.0f;
             chooseBtn.onClick = [this] { chooseFolder(); };
@@ -93,13 +113,28 @@ namespace tui
                 g.drawText (juce::String::fromUTF8 ("VARIANTES (clic = \xc3\xa9" "couter)"), varLbl, juce::Justification::centredLeft);
                 g.drawText ("CHARGER SUR LA PISTE", laneLbl, juce::Justification::centredLeft);
                 // variantes
+                const bool tunedOk = s->tuned && (int) s->hz.size() == (int) s->variants.size();
                 for (int v = 0; v < (int) s->variants.size() && v < 32; ++v)
                 {
                     auto r = varRect (v).toFloat();
                     g.setColour (v == selVariant ? t.acc : t.bg); g.fillRoundedRectangle (r, 5.0f);
+                    if (tunedOk && v == s->zeroVar) { g.setColour (t.lcdTx); g.drawRoundedRectangle (r.reduced (0.5f), 5.0f, 1.5f); }
                     g.setColour (v == selVariant ? t.bg : t.tx); g.setFont (mono (11.0f, true));
-                    g.drawText (juce::String (v + 1), r.toNearestInt(), juce::Justification::centred);
+                    juce::String lab = juce::String (v + 1);
+                    // écart en demi-tons par rapport au pitch zéro, quand les deux ont une hauteur nette
+                    if (tunedOk && s->pitched[(size_t) v] && s->pitched[(size_t) s->zeroVar])
+                    {
+                        const int st = (int) std::lround (12.0 * std::log2 (s->hz[(size_t) v] / s->hz[(size_t) s->zeroVar]));
+                        lab = v == s->zeroVar ? juce::String ("0") : (st > 0 ? "+" : "") + juce::String (st);
+                    }
+                    g.drawText (lab, r.toNearestInt(), juce::Justification::centred);
                 }
+                g.setColour (t.sub); g.setFont (font (11.0f, true));
+                g.drawText (juce::String::fromUTF8 ("ACCORD (GARD\xc3\x89 POUR TOUS TES PROJETS)"), accLbl, juce::Justification::centredLeft);
+                g.setColour (valueColour (t)); g.setFont (mono (13.0f));
+                juce::String hzTxt;
+                if (tunedOk && s->pitched[(size_t) s->zeroVar]) hzTxt = "  " + juce::String (juce::roundToInt (s->hz[(size_t) s->zeroVar] * std::pow (2.0f, s->tune / 12.0f))) + " Hz";
+                g.drawText ((s->tune > 0.0f ? "+" : "") + juce::String (s->tune, 1) + " st" + hzTxt, accVal, juce::Justification::centred);
             }
             else
             {
@@ -115,7 +150,7 @@ namespace tui
             g.setFont (font (12.0f));
             for (int l = 0; l < typhon::numLanes; ++l)
             {
-                auto r = curArea.withHeight (19).translated (0, l * 19);
+                auto r = curArea.withHeight (17).translated (0, l * 17);
                 g.setColour (t.tx); g.drawText (typhon::laneShortName (l), r.removeFromLeft (60), juce::Justification::centredLeft);
                 g.setColour (t.sub); g.drawFittedText (ctx.proc.laneSource (l), r, juce::Justification::centredLeft, 1);
             }
@@ -144,7 +179,17 @@ namespace tui
             titleArea = R.removeFromTop (30);
             infoArea = R.removeFromTop (18); R.removeFromTop (10);
             varLbl = R.removeFromTop (16); R.removeFromTop (4);
-            varArea = R.removeFromTop (62); R.removeFromTop (8);
+            varArea = R.removeFromTop (62); R.removeFromTop (6);
+            accLbl = R.removeFromTop (16); R.removeFromTop (3);
+            {
+                auto a = R.removeFromTop (30);
+                accMinus.setBounds (a.removeFromLeft (34)); a.removeFromLeft (4);
+                accVal = a.removeFromLeft (110); a.removeFromLeft (4);
+                accPlus.setBounds (a.removeFromLeft (34)); a.removeFromLeft (8);
+                autoBtn.setBounds (a.removeFromRight (64)); a.removeFromRight (6);
+                zeroBtn.setBounds (a);
+            }
+            R.removeFromTop (8);
             laneLbl = R.removeFromTop (16); R.removeFromTop (4);
             auto lr = R.removeFromTop (70);
             const int bw = (lr.getWidth() - 18) / 4;
@@ -153,7 +198,7 @@ namespace tui
             R.removeFromTop (10);
             kitBtn.setBounds (R.removeFromTop (44)); R.removeFromTop (14);
             curLbl = R.removeFromTop (16);
-            curArea = R.removeFromTop (8 * 19);
+            curArea = R.removeFromTop (8 * 17);
             R.removeFromTop (12);
             auto kb = R.removeFromTop (34);
             saveKitBtn.setBounds (kb.removeFromLeft (kb.getWidth() * 3 / 5 - 3)); kb.removeFromLeft (6);
@@ -214,12 +259,42 @@ namespace tui
             });
         }
 
+        void nudgeAccord (float d)
+        {
+            if (auto* s = soundMut())
+            {
+                ctx.proc.setSoundAccord (*s, s->zeroVar, s->tune + d);
+                ctx.proc.previewSound (*s, selVariant, s->tune);
+                repaint();
+            }
+        }
+        typhon::LibMachine* machineMut() { return (selMachine >= 0 && selMachine < (int) ctx.proc.library.size()) ? &ctx.proc.library[(size_t) selMachine] : nullptr; }
+        typhon::LibSound* soundMut()
+        {
+            auto* m = machineMut();
+            if (m == nullptr || selSound < 0 || selSound >= (int) m->sounds.size()) return nullptr;
+            auto* s = &m->sounds[(size_t) selSound];
+            ctx.proc.tuneSound (*s);
+            return s;
+        }
+
         void mouseDown (const juce::MouseEvent& e) override
         {
-            auto* s = sound();
+            auto* s = soundMut();
             if (s == nullptr) return;
             for (int v = 0; v < (int) s->variants.size() && v < 32; ++v)
-                if (varRect (v).contains (e.getPosition())) { selVariant = v; ctx.proc.previewSound (*s, v); repaint(); return; }
+                if (varRect (v).contains (e.getPosition()))
+                {
+                    selVariant = v; ctx.proc.previewSound (*s, v, s->tune); repaint();
+                    if (e.mods.isPopupMenu())
+                    {
+                        juce::PopupMenu m;
+                        m.addItem (1, juce::String::fromUTF8 ("D\xc3\xa9" "finir comme pitch z\xc3\xa9ro"), v != s->zeroVar);
+                        juce::Component::SafePointer<LibraryPage> safe (this);
+                        m.showMenuAsync (juce::PopupMenu::Options(), [safe, v] (int r) { if (safe != nullptr && r == 1) { safe->selVariant = v; safe->zeroBtn.triggerClick(); } });
+                    }
+                    return;
+                }
         }
 
     private:
@@ -239,11 +314,11 @@ namespace tui
         }
         void loadTo (int lane)
         {
-            auto* s = sound();
+            auto* s = soundMut();
             if (s == nullptr) return;
             if (ctx.proc.loadLibrarySound (lane, *s))
             {
-                if (selVariant > 0) if (auto* p = ctx.proc.apvts.getParameter (typhon::pid (lane, "var"))) p->setValueNotifyingHost (p->convertTo0to1 ((float) selVariant + 1.0f));
+                if (auto* p = ctx.proc.apvts.getParameter (typhon::pid (lane, "var"))) p->setValueNotifyingHost (p->convertTo0to1 ((float) selVariant + 1.0f));
                 ctx.proc.undoCommit();
                 ctx.proc.audition (lane);
                 status = s->name + juce::String::fromUTF8 (" \xe2\x86\x92 ") + typhon::laneName (lane);
@@ -310,7 +385,7 @@ namespace tui
             {
                 if (isMachines) { page.selMachine = row; page.selSound = -1; page.selVariant = 0; page.soundList.updateContent(); page.soundList.deselectAllRows(); page.repaint(); return; }
                 page.selSound = row; page.selVariant = 0;
-                if (auto* s = page.sound()) page.ctx.proc.previewSound (*s, 0);
+                if (auto* s = page.soundMut()) { page.selVariant = s->zeroVar; page.ctx.proc.previewSound (*s, s->zeroVar, s->tune); }
                 page.repaint();
             }
             void listBoxItemDoubleClicked (int row, const juce::MouseEvent&) override
@@ -333,6 +408,8 @@ namespace tui
         int selMachine = 0, selSound = -1, selVariant = 0;
         bool scanned = false;
         juce::String status;
+        juce::Rectangle<int> accLbl, accVal;
+        Pill accMinus, accPlus, zeroBtn, autoBtn;
         juce::Rectangle<int> left, mid, right, lblMachines, lblSounds, lblSel, pathArea, statusArea, titleArea, infoArea, varLbl, varArea, laneLbl, curLbl, curArea;
     };
 }

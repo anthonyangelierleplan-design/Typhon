@@ -280,6 +280,28 @@ int main()
         CHECK (st->numVariants() == 1 && st->variants[0].size() == 2 && st->variants[0][1]->l.size() > 47000, "stretch : toutes les variantes et round robin");
     }
 
+    // accord des banques : hauteur d'un coup
+    {
+        auto hit = [] (double f0, bool noise)
+        {
+            Sample s; s.rate = 44100.0; uint32_t r = 7;
+            for (int i = 0; i < 22050; ++i)
+            {
+                const double t = i / 44100.0, env = std::exp (-t * 6.0);
+                r = r * 1664525u + 1013904223u;
+                const double nz = ((r >> 8) / 8388608.0 - 1.0);
+                s.l.push_back ((float) (env * (noise ? nz * 0.6 : 0.8 * std::sin (2.0 * 3.14159265 * f0 * t) + 0.2 * std::sin (4.0 * 3.14159265 * f0 * t))));
+            }
+            return s;
+        };
+        bool p1, p2, p3, p4;
+        const float a = pitchOfHit (hit (55.0, false), p1), b = pitchOfHit (hit (110.0, false), p2), c = pitchOfHit (hit (196.0, false), p3);
+        pitchOfHit (hit (0.0, true), p4);
+        CHECK (p1 && p2 && p3 && std::fabs (a - 55.0f) < 2.0f && std::fabs (b - 110.0f) < 3.0f && std::fabs (c - 196.0f) < 5.0f,
+               "accord : hauteurs 55 / 110 / 196 Hz retrouvées (%.1f / %.1f / %.1f)", a, b, c);
+        CHECK (! p4, "accord : un bruit (charleston) n'a pas de hauteur");
+    }
+
     std::printf ("\n%s (%d échec%s)\n", fails == 0 ? "TOUT EST BON" : "PROBLÈMES", fails, fails > 1 ? "s" : "");
     return fails;
 }

@@ -469,6 +469,7 @@ bool TyphonProcessor::loadKitFolder (const juce::File& folder)
         const int lane = laneX->getIntAttribute ("index", -1);
         if (lane < 0 || lane >= numLanes) continue;
         auto set = std::make_shared<SampleSet>();
+        set->tune = (float) laneX->getDoubleAttribute ("tune", 0.0);
         for (auto* varX : laneX->getChildWithTagNameIterator ("VARIANT"))
         {
             std::vector<std::shared_ptr<Sample>> v;
@@ -527,6 +528,7 @@ juce::File TyphonProcessor::saveUserKit (const juce::String& wanted)
         auto* lx = kit.createNewChildElement ("LANE");
         lx->setAttribute ("index", l);
         lx->setAttribute ("label", laneSource (l));
+        if (set->tune != 0.0f) lx->setAttribute ("tune", (double) set->tune);
         int fileNo = 0;
         auto addFiles = [&] (juce::XmlElement* parent, const std::vector<std::shared_ptr<Sample>>& v)
         {
@@ -644,7 +646,7 @@ void TyphonProcessor::trigger (int lane, int vel, int chokeMode, int64_t gateSam
         GrainCloud* c = &L.clouds[0];
         if (L.clouds[0].active && ! L.clouds[1].active) c = &L.clouds[1];
         else if (L.clouds[0].active && L.clouds[1].active) c = L.clouds[0].age > L.clouds[1].age ? &L.clouds[0] : &L.clouds[1];
-        c->pitchOffset = P.pitch->load() + (float) pitchOffset;
+        c->pitchOffset = P.pitch->load() + set->tune + (float) pitchOffset;
         c->rng = (uint32_t) (hitCounter[lane].load() * 2654435761u + 17u);
         c->invertRev = stepRev != (P.rev->load() > 0.5f);
         c->start (smp, set, sr, grainParams (lane), gain, lk (lkGpos));
@@ -672,7 +674,7 @@ void TyphonProcessor::trigger (int lane, int vel, int chokeMode, int64_t gateSam
     v.reverse = (P.rev->load() > 0.5f) != stepRev;
     v.startPos = s0; v.endPos = s1;
     v.pos = v.reverse ? s1 - 1.0 : s0;
-    v.inc = smp->rate / sr * std::pow (2.0, (P.pitch->load() + (float) pitchOffset) / 12.0);
+    v.inc = smp->rate / sr * std::pow (2.0, (P.pitch->load() + set->tune + (float) pitchOffset) / 12.0);
     v.gain = gain; v.gL = gL; v.gR = gR;
     v.fade = 1.0f; v.fadeStep = 0.0f;
     v.env = 1.0f;
@@ -1056,7 +1058,7 @@ void TyphonProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
             if (previewVoice.smp != nullptr)
             {
                 previewVoice.pos = 0; previewVoice.startPos = 0; previewVoice.endPos = previewVoice.smp->length();
-                previewVoice.inc = previewVoice.smp->rate / sr; previewVoice.reverse = false;
+                previewVoice.inc = previewVoice.smp->rate / sr * std::pow (2.0, ps->tune / 12.0); previewVoice.reverse = false;
                 previewVoice.gain = 0.8f; previewVoice.gL = previewVoice.gR = 1.0f; previewVoice.fade = 1.0f; previewVoice.fadeStep = 0.0f;
                 previewVoice.env = 1.0f; previewVoice.envMul = 1.0f; previewVoice.gateLeft = -1; previewVoice.active = true;
             }
@@ -1300,7 +1302,9 @@ void TyphonProcessor::setStateInformation (const void* data, int sizeInBytes)
             if (path.startsWith ("lib:"))
             {
                 LibSound s;
+                const float savedVar = apvts.getRawParameterValue (pid (l, "var"))->load();   // la variante du projet prime sur le pitch zéro
                 if (! decodeSound (path, s) || ! loadLibrarySound (l, s)) resetLaneToFallback (l);
+                else if (auto* p = apvts.getParameter (pid (l, "var"))) p->setValueNotifyingHost (p->convertTo0to1 (savedVar));
                 continue;
             }
             if (path.startsWith ("kit:"))
@@ -1427,14 +1431,117 @@ static std::shared_ptr<SampleSet> loadSoundSet (const LibSound& s, juce::AudioFo
     return set->variants.empty() ? nullptr : set;
 }
 
-bool TyphonProcessor::loadLibrarySound (int lane, const LibSound& s)
+// ---------------------------------------------------------------------------
+//  Accord des banques : variantes rangées du grave à l'aigu, « pitch zéro » choisi
+//  (le tien s'il est enregistré, sinon la variante la plus proche de la hauteur
+//  habituelle du rôle — kick ~52 Hz, snare ~185 Hz — ou celle du milieu), accord fin.
+//  Tes réglages sont gardés dans Typhon_accords.txt, pour tous les projets.
+// ---------------------------------------------------------------------------
+static juce::File accordsFile() { return TyphonSettings::file().getSiblingFile ("Typhon_accords.txt"); }
+
+void TyphonProcessor::loadAccords()
+{
+    if (accordsLoaded) return;
+    accordsLoaded = true;
+    juce::StringArray lines; accordsFile().readLines (lines);
+    for (auto& ln : lines)
+    {
+        juce::StringArray t; t.addTokens (ln, "\t", "");
+        if (t.size() >= 3) accords[t[0]] = { t[1], t[2].getFloatValue() };
+    }
+}
+
+void TyphonProcessor::saveAccords()
+{
+    juce::String out;
+    for (auto& [k, a] : accords) out << k << "\t" << a.zeroFile << "\t" << juce::String (a.tune, 2) << "\n";
+    accordsFile().replaceWithText (out);
+}
+
+void TyphonProcessor::tuneSound (LibSound& s)
+{
+    if (s.tuned || s.variants.empty()) return;
+    loadAccords();
+    juce::AudioFormatManager fm; fm.registerBasicFormats();
+    struct V { std::vector<juce::File> files; float hz; bool pitched; };
+    std::vector<V> vs;
+    for (auto& v : s.variants)
+    {
+        float hz = 0.0f; bool p = false;
+        if (! v.empty())
+        {
+            const auto path = v[0].getFullPathName();
+            auto it = pitchCache.find (path);
+            if (it != pitchCache.end()) { hz = it->second.first; p = it->second.second; }
+            else if (auto smp = readSample (fm, v[0])) { hz = pitchOfHit (*smp, p); pitchCache[path] = { hz, p }; }
+        }
+        vs.push_back ({ v, hz, p });
+    }
+    if (vs.size() > 1) std::stable_sort (vs.begin(), vs.end(), [] (const V& a, const V& b) { return a.hz < b.hz; });
+    s.variants.clear(); s.hz.clear(); s.pitched.clear();
+    for (auto& v : vs) { s.variants.push_back (v.files); s.hz.push_back (v.hz); s.pitched.push_back (v.pitched); }
+    const int n = (int) s.variants.size();
+    s.zeroVar = (n - 1) / 2;
+    s.tune = 0.0f;
+    const float target = roleTargetHz (s.role);
+    if (target > 0.0f && n > 1)
+    {
+        float bestD = 1.0e9f;
+        for (int i = 0; i < n; ++i)
+            if (s.pitched[(size_t) i]) { const float d = std::fabs (std::log2 (s.hz[(size_t) i] / target)); if (d < bestD) { bestD = d; s.zeroVar = i; } }
+    }
+    auto it = accords.find (s.key());
+    if (it != accords.end())
+    {
+        for (int i = 0; i < n; ++i) if (! s.variants[(size_t) i].empty() && s.variants[(size_t) i][0].getFileName() == it->second.zeroFile) s.zeroVar = i;
+        s.tune = it->second.tune;
+    }
+    s.tuned = true;
+}
+
+void TyphonProcessor::setSoundAccord (LibSound& s, int zeroVar, float tune)
+{
+    tuneSound (s);
+    if (zeroVar >= 0 && zeroVar < (int) s.variants.size()) s.zeroVar = zeroVar;
+    s.tune = juce::jlimit (-24.0f, 24.0f, tune);
+    accords[s.key()] = { s.variants.empty() || s.variants[(size_t) s.zeroVar].empty() ? juce::String() : s.variants[(size_t) s.zeroVar][0].getFileName(), s.tune };
+    saveAccords();
+    // les pistes qui jouent déjà ce son suivent
+    for (int l = 0; l < numLanes; ++l)
+        if (laneSource (l) == (s.machine + " - " + s.name))
+            if (auto set = std::atomic_load (&baseSets[(size_t) l])) { auto c = std::make_shared<SampleSet> (*set); c->tune = s.tune; setLaneSet (l, c); }
+}
+
+// Proposition d'accord pour toute une machine : kick et snare ramenés vers leur hauteur habituelle
+// (jamais plus aigu), à appliquer puis ajuster à l'oreille
+int TyphonProcessor::autoTuneMachine (LibMachine& m)
+{
+    int changed = 0;
+    for (auto& s : m.sounds)
+    {
+        tuneSound (s);
+        const float target = roleTargetHz (s.role);
+        if (target <= 0.0f || s.variants.empty()) continue;
+        const int z = s.zeroVar;
+        if (z >= (int) s.pitched.size() || ! s.pitched[(size_t) z]) continue;
+        const float semis = 12.0f * std::log2 (s.hz[(size_t) z] / target);
+        const float t = semis > 1.5f ? -std::round (semis * 2.0f) / 2.0f : 0.0f;
+        if (std::fabs (t - s.tune) > 0.01f) { setSoundAccord (s, z, juce::jmax (-12.0f, t)); ++changed; }
+    }
+    return changed;
+}
+
+bool TyphonProcessor::loadLibrarySound (int lane, const LibSound& src)
 {
     if (lane < 0 || lane >= numLanes) return false;
+    LibSound s = src;
+    tuneSound (s);
     juce::AudioFormatManager fm; fm.registerBasicFormats();
     auto set = loadSoundSet (s, fm);
     if (set == nullptr) return false;
+    set->tune = s.tune;
     setLaneSet (lane, set);
-    if (auto* p = apvts.getParameter (pid (lane, "var"))) p->setValueNotifyingHost (p->convertTo0to1 (1.0f));
+    if (auto* p = apvts.getParameter (pid (lane, "var"))) p->setValueNotifyingHost (p->convertTo0to1 ((float) s.zeroVar + 1.0f));
     const juce::ScopedLock sl (srcLock);
     laneSourceText[lane] = juce::String (set->name);
     laneSourcePath[lane] = encodeSound (s);
@@ -1450,7 +1557,7 @@ void TyphonProcessor::loadMachineKit (const LibMachine& m)
     kitName = m.name;
 }
 
-void TyphonProcessor::previewSound (const LibSound& s, int variant)
+void TyphonProcessor::previewSound (const LibSound& s, int variant, float tune)
 {
     if (variant < 0 || variant >= (int) s.variants.size() || s.variants[(size_t) variant].empty()) return;
     juce::AudioFormatManager fm; fm.registerBasicFormats();
@@ -1458,6 +1565,7 @@ void TyphonProcessor::previewSound (const LibSound& s, int variant)
     if (smp == nullptr) return;
     auto set = std::make_shared<SampleSet>();
     set->variants.push_back ({ smp });
+    set->tune = tune;
     auto old = std::atomic_exchange (&previewSet, set);
     { const juce::ScopedLock sl (graveLock); if (old != nullptr) graveyard.push_back (old); }
     previewTrigger.store (true);

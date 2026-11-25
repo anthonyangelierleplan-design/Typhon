@@ -165,6 +165,7 @@ namespace typhon
         std::vector<std::vector<std::shared_ptr<Sample>>> variants; // sons de machine : variante -> round robin (si non vide, prime sur layers)
         std::vector<int> layerTopVel;                             // vélocité max de chaque couche
         std::string name;
+        float tune = 0.0f;                                        // accord du son (demi-tons) : le « pitch zéro » de la piste
 
         bool empty() const { return (layers.empty() || layers[0].empty()) && variants.empty(); }
         int numVariants() const { return (int) variants.size(); }
@@ -971,6 +972,70 @@ namespace typhon
         for (auto& layer : in.layers) { std::vector<std::shared_ptr<Sample>> v; for (auto& s : layer) v.push_back (one (s)); out->layers.push_back (v); }
         for (auto& var : in.variants) { std::vector<std::shared_ptr<Sample>> v; for (auto& s : var) v.push_back (one (s)); out->variants.push_back (v); }
         return out;
+    }
+
+
+    // ------------------------------------------------------------------------
+    //  Hauteur d'un coup (pour accorder les banques)
+    //  fondamentale par autocorrélation sur ~90 ms après l'attaque ; si le son n'a pas de hauteur
+    //  nette (charleston, cymbale), on renvoie une « hauteur » de brillance (passages par zéro).
+    //  pitched = true si une fondamentale fiable a été trouvée.
+    // ------------------------------------------------------------------------
+    inline float pitchOfHit (const Sample& smp, bool& pitched)
+    {
+        pitched = false;
+        const int n = (int) smp.l.size();
+        if (n < 64 || smp.rate <= 0.0) return 0.0f;
+        int peak = 0; float pk = 0.0f;
+        for (int i = 0; i < std::min (n, (int) (smp.rate * 0.05)); ++i) { const float a = std::fabs (smp.l[(size_t) i]); if (a > pk) { pk = a; peak = i; } }
+        // signal décimé vers ~11 kHz, mono
+        const int step = std::max (1, (int) std::lround (smp.rate / 11025.0));
+        const double fr = smp.rate / step;
+        std::vector<float> x;
+        for (int i = peak + (int) (smp.rate * 0.004); i < n && (int) x.size() < (int) (fr * 0.09); i += step)
+        {
+            float v = 0.0f; for (int k = 0; k < step && i + k < n; ++k) v += smp.l[(size_t) (i + k)] + (smp.r.empty() ? smp.l[(size_t) (i + k)] : smp.r[(size_t) (i + k)]);
+            x.push_back (v);
+        }
+        const int m = (int) x.size();
+        if (m < 64) return 0.0f;
+        double e0 = 0.0; for (float v : x) e0 += (double) v * v;
+        if (e0 <= 1.0e-12) return 0.0f;
+        const int lagMin = std::max (2, (int) (fr / 1000.0)), lagMax = std::min (m / 2, (int) (fr / 30.0));
+        double best = 0.0; int bestLag = 0;
+        std::vector<double> r ((size_t) lagMax + 2, 0.0);
+        for (int lag = lagMin; lag <= lagMax; ++lag)
+        {
+            double acc = 0.0, ea = 0.0, eb = 0.0;
+            for (int i = 0; i + lag < m; ++i) { acc += (double) x[(size_t) i] * x[(size_t) (i + lag)]; ea += (double) x[(size_t) i] * x[(size_t) i]; eb += (double) x[(size_t) (i + lag)] * x[(size_t) (i + lag)]; }
+            r[(size_t) lag] = acc / std::sqrt (std::max (1.0e-12, ea * eb));
+        }
+        // premier pic fort (évite l'octave du dessous)
+        double globalMax = 0.0; for (int lag = lagMin; lag <= lagMax; ++lag) globalMax = std::max (globalMax, r[(size_t) lag]);
+        for (int lag = lagMin + 1; lag < lagMax; ++lag)
+            if (r[(size_t) lag] > r[(size_t) lag - 1] && r[(size_t) lag] >= r[(size_t) lag + 1] && r[(size_t) lag] > 0.85 * globalMax)
+            { best = r[(size_t) lag]; bestLag = lag; break; }
+        if (bestLag > 0 && best > 0.55)
+        {
+            // interpolation parabolique du pic
+            const double a = r[(size_t) bestLag - 1], b = r[(size_t) bestLag], c = r[(size_t) bestLag + 1];
+            const double d = (a - 2.0 * b + c) != 0.0 ? 0.5 * (a - c) / (a - 2.0 * b + c) : 0.0;
+            pitched = true;
+            return (float) (fr / (bestLag + d));
+        }
+        int zc = 0; for (int i = 1; i < m; ++i) zc += (x[(size_t) i - 1] < 0.0f) != (x[(size_t) i] < 0.0f);
+        return (float) (zc * fr / (2.0 * m));
+    }
+
+    // Fondamentale de référence par rôle de piste (Hz), 0 = pas de cible
+    inline float roleTargetHz (int role)
+    {
+        switch (role)
+        {
+            case 0: return 52.0f;    // kick
+            case 1: case 2: return 185.0f;   // snare, ghost
+            default: return 0.0f;
+        }
     }
 
 }
